@@ -5,12 +5,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Telegram
-    BOT_TOKEN: str = "YOUR_TELEGRAM_BOT_TOKEN"
+    BOT_TOKEN: str = "8942360382:AAGOIipze9lGIjVwwuNWCN4YasR1geMaKPg"
     ALLOWED_CHAT_IDS: Optional[str] = None  # Например: "-1001234567890,-1009876543210"
 
     # Bitrix24 Webhook URL
-    # Пример: https://b24-xxxx.bitrix24.ru/rest/1/abcdef123456/
-    BITRIX_WEBHOOK_URL: str = "https://your-domain.bitrix24.ru/rest/1/webhook_token/"
+    BITRIX_WEBHOOK_URL: str = "https://matraslar.bitrix24.uz/rest/7/4n7isora87z2wykc/"
     
     # Стадия сделки по умолчанию ("Zakaz yaratildi")
     DEFAULT_STAGE_ID: str = "UC_MG82DT"
