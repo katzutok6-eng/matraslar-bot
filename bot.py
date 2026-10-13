@@ -112,36 +112,11 @@ async def handle_group_message(message: Message):
         )
         deal_url = bitrix_client.get_deal_url(deal_id)
 
-        # 4. Формирование красивого ответа в группу
-        phone_items = []
-        for p in order.phones:
-            note = order.phone_notes.get(p)
-            phone_items.append(f"{p} ({note})" if note else p)
-        phones_text = ", ".join(phone_items) if phone_items else "не указан"
-
-        prepay_info = f"{order.prepayment_amount:,.0f} сум".replace(",", " ")
-        if order.prepayment_type:
-            prepay_info += f" ({order.prepayment_type})"
-
-        total_info = f"{order.total_amount:,.0f} сум".replace(",", " ")
-        balance_info = f"{order.balance_due:,.0f} сум".replace(",", " ")
-
+        # 4. Лаконичный ответ в группу: галочка, статус и ссылка на сделку
         if is_updated:
-            header_text = f"🔄 <b>Сделка #{deal_id} из Instagram/CRM обновлена!</b>\n<i>Переведена на этап «Zakaz yaratildi»</i>"
+            reply_text = f"✅ Заказ обновлён в Битрикс24: <a href=\"{deal_url}\">Сделка #{deal_id}</a>"
         else:
-            header_text = f"✅ <b>Создана новая сделка #{deal_id} в Битрикс24!</b>\n<i>Этап «Zakaz yaratildi»</i>"
-
-        reply_text = (
-            f"{header_text}\n\n"
-            f"📦 <b>Модель:</b> {order.product_name}\n"
-            f"📏 <b>Размер:</b> {order.size or 'не указан'}\n"
-            f"💰 <b>Сумма:</b> {total_info}\n"
-            f"💳 <b>Оплачено:</b> {prepay_info}\n"
-            f"⏳ <b>К доплате:</b> {balance_info}\n"
-            f"📞 <b>Телефон:</b> {phones_text}\n"
-            f"📍 <b>Доставка:</b> {order.delivery_address or '—'} ({order.delivery_date or '—'})\n\n"
-            f"🔗 <a href=\"{deal_url}\">Открыть сделку в Битрикс24</a>"
-        )
+            reply_text = f"✅ Заказ создан в Битрикс24: <a href=\"{deal_url}\">Сделка #{deal_id}</a>"
 
         await message.reply(
             text=reply_text,
