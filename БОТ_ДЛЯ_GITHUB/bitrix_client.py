@@ -1,0 +1,249 @@
+import logging
+import re
+from typing import Dict, Any, List, Optional
+import httpx
+from models import OrderData
+
+logger = logging.getLogger(__name__)
+
+
+class Bitrix24Client:
+    def __init__(self, webhook_url: str, custom_fields_map: Optional[Dict[str, str]] = None):
+        """
+        webhook_url: например 'https://mycompany.bitrix24.ru/rest/1/abcdef12345/'
+        custom_fields_map: словарь маппинга полей заказа на системные коды полей в Битрикс24 (UF_CRM_...)
+        """
+        self.webhook_url = webhook_url.rstrip("/") + "/"
+        self.custom_fields_map = custom_fields_map or {
+            "order_tags": "UF_CRM_TAGS",
+            "size": "UF_CRM_MATTRESS_SIZE",
+            "material": "UF_CRM_MATERIAL",
+            "details": "UF_CRM_MATTRESS_DETAILS",
+            "prepayment_amount": "UF_CRM_PREPAYMENT",
+            "prepayment_type": "UF_CRM_PAYMENT_TYPE",
+            "balance_due": "UF_CRM_BALANCE",
+            "delivery_address": "UF_CRM_DELIVERY_ADDR",
+            "delivery_date": "UF_CRM_DELIVERY_DATE",
+        }
+
+    @property
+    def domain(self) -> str:
+        """Извлекает домен Битрикс24 из вебхука для формирования прямых ссылок."""
+        match = re.search(r"https?://([^/]+)", self.webhook_url)
+        return match.group(1) if match else "bitrix24.ru"
+
+    def get_deal_url(self, deal_id: int) -> str:
+        """Возвращает прямую ссылку на сделку в веб-интерфейсе Битрикс24."""
+        return f"https://{self.domain}/crm/deal/details/{deal_id}/"
+
+    async def _call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Отправляет асинхронный REST-запрос к вебхуку Битрикс24."""
+        url = f"{self.webhook_url}{method}.json"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=params or {})
+            resp.raise_for_status()
+            res_data = resp.json()
+            if "error" in res_data:
+                raise RuntimeError(f"Bitrix24 Error: {res_data.get('error_description', res_data['error'])}")
+            return res_data
+
+    async def find_contact_by_phone(self, phone: str) -> Optional[int]:
+        """Ищет существующий контакт по номеру телефона."""
+        try:
+            # Очищаем телефон для поиска
+            clean_phone = re.sub(r"[^\d+]", "", phone)
+            res = await self._call("crm.contact.list", {
+                "filter": {"PHONE": clean_phone},
+                "select": ["ID", "NAME"]
+            })
+            contacts = res.get("result", [])
+            if contacts:
+                return int(contacts[0]["ID"])
+        except Exception as e:
+            logger.warning(f"Не удалось найти контакт по телефону {phone}: {e}")
+        return None
+
+    async def create_contact(self, phones: List[str], name: str = "Клиент из Telegram") -> int:
+        """Создает новый контакт с привязанными телефонами."""
+        phone_items = []
+        for p in phones:
+            phone_items.append({"VALUE": p, "VALUE_TYPE": "WORK"})
+
+        payload = {
+            "fields": {
+                "NAME": name,
+                "TYPE_ID": "CLIENT",
+                "SOURCE_ID": "TELEGRAM",
+                "PHONE": phone_items
+            }
+        }
+        res = await self._call("crm.contact.add", payload)
+        return int(res["result"])
+
+    async def find_or_create_contact(self, phones: List[str], name: str = "Клиент") -> Optional[int]:
+        """Ищет контакт по любому из переданных телефонов, если нет — создает."""
+        if not phones:
+            return None
+
+        for p in phones:
+            contact_id = await self.find_contact_by_phone(p)
+            if contact_id:
+                return contact_id
+
+        # Не найден ни один телефон -> создаем контакт
+        first_phone = phones[0]
+        contact_name = f"Клиент ({first_phone})"
+        return await self.create_contact(phones, name=contact_name)
+
+    def _format_deal_comments(self, order: OrderData) -> str:
+        """Форматирует детальное описание заказа для поля 'Комментарий' в сделке."""
+        phones_list = []
+        for p in order.phones:
+            note = order.phone_notes.get(p)
+            phones_list.append(f"{p} ({note})" if note else p)
+        phones_str = ", ".join(phones_list) if phones_list else "не указан"
+
+        lines = [
+            "Детали заказа из Telegram:\n",
+            f"Теги: {' '.join(order.order_tags)}\n" if order.order_tags else "",
+            f"Модель: {order.product_name}\n",
+            f"Размер: {order.size}\n" if order.size else "",
+            f"Телефоны: {phones_str}\n",
+            f"Материал/чехол: {order.material}\n" if order.material else "",
+            f"Наполнение/детали: {order.details}\n" if order.details else "",
+            f"Общая сумма: {order.total_amount:,.0f} UZS\n",
+            f"Предоплата: {order.prepayment_amount:,.0f} UZS ({order.prepayment_type or 'не указано'})\n",
+            f"Остаток к получению: {order.balance_due:,.0f} UZS\n",
+            f"Доставка в: {order.delivery_address}\n" if order.delivery_address else "",
+            f"Дата доставки: {order.delivery_date}\n" if order.delivery_date else "",
+            "\n--- Исходный текст сообщения ---\n",
+            f"{order.raw_text}"
+        ]
+        return "".join(lines)
+
+    def _build_deal_fields(self, order: OrderData, stage_id: Optional[str] = None, contact_id: Optional[int] = None) -> Dict[str, Any]:
+        """Формирует словарь полей сделки."""
+        deal_title = f"{order.product_name}"
+        if order.size:
+            deal_title += f" {order.size}"
+        if order.order_tags:
+            deal_title += f" ({' '.join(order.order_tags)})"
+
+        fields: Dict[str, Any] = {
+            "TITLE": deal_title,
+            "OPPORTUNITY": order.total_amount,
+            "CURRENCY_ID": "UZS",
+            "SOURCE_ID": "TELEGRAM",
+            "COMMENTS": self._format_deal_comments(order)
+        }
+
+        if stage_id:
+            fields["STAGE_ID"] = stage_id
+
+        if contact_id:
+            fields["CONTACT_ID"] = contact_id
+
+        # Если задана дата доставки, проставляем ожидаемую дату завершения сделки CLOSEDATE
+        if order.delivery_date:
+            fields["CLOSEDATE"] = f"{order.delivery_date}T18:00:00+05:00"
+
+        # Добавляем пользовательские поля UF_CRM_... если они сопоставлены
+        order_dict = order.model_dump()
+        for order_key, uf_code in self.custom_fields_map.items():
+            val = order_dict.get(order_key)
+            if val is not None and uf_code:
+                if isinstance(val, list):
+                    fields[uf_code] = " ".join(val)
+                else:
+                    fields[uf_code] = val
+
+        return fields
+
+    async def find_active_deal_by_contact(self, contact_id: int) -> Optional[Dict[str, Any]]:
+        """Ищет самую свежую активную (незакрытую) сделку контакта (например, созданную из Instagram)."""
+        try:
+            res = await self._call("crm.deal.list", {
+                "filter": {"CONTACT_ID": contact_id, "CLOSED": "N"},
+                "order": {"ID": "DESC"},
+                "select": ["ID", "TITLE", "STAGE_ID", "OPPORTUNITY"]
+            })
+            deals = res.get("result", [])
+            if deals:
+                return deals[0]
+        except Exception as e:
+            logger.warning(f"Ошибка поиска активной сделки для контакта {contact_id}: {e}")
+        return None
+
+    async def create_deal(self, order: OrderData, contact_id: Optional[int] = None, stage_id: Optional[str] = "UC_MG82DT") -> int:
+        """Создает сделку в Битрикс24 со всеми стандартными и пользовательскими полями."""
+        fields = self._build_deal_fields(order, stage_id=stage_id, contact_id=contact_id)
+
+        try:
+            res = await self._call("crm.deal.add", {"fields": fields})
+            return int(res["result"])
+        except Exception as e:
+            logger.warning(f"Ошибка при создании со спецполями ({e}), создаем базовую сделку...")
+            basic_fields = {
+                "TITLE": fields["TITLE"],
+                "OPPORTUNITY": fields["OPPORTUNITY"],
+                "CURRENCY_ID": fields["CURRENCY_ID"],
+                "SOURCE_ID": fields["SOURCE_ID"],
+                "COMMENTS": fields["COMMENTS"],
+            }
+            if stage_id:
+                basic_fields["STAGE_ID"] = stage_id
+            if contact_id:
+                basic_fields["CONTACT_ID"] = contact_id
+            if "CLOSEDATE" in fields:
+                basic_fields["CLOSEDATE"] = fields["CLOSEDATE"]
+
+            res = await self._call("crm.deal.add", {"fields": basic_fields})
+            return int(res["result"])
+
+    async def update_deal(self, deal_id: int, order: OrderData, stage_id: Optional[str] = "UC_MG82DT") -> int:
+        """Обновляет существующую сделку (из Instagram или CRM) новыми деталями заказа."""
+        fields = self._build_deal_fields(order, stage_id=stage_id)
+        # При обновлении SOURCE_ID не перезаписываем, чтобы сохранить исходный источник (например, INSTAGRAM)
+        fields.pop("SOURCE_ID", None)
+
+        try:
+            await self._call("crm.deal.update", {"id": deal_id, "fields": fields})
+            return deal_id
+        except Exception as e:
+            logger.warning(f"Ошибка обновления сделки {deal_id} со спецполями: {e}")
+            basic_fields = {
+                "TITLE": fields["TITLE"],
+                "OPPORTUNITY": fields["OPPORTUNITY"],
+                "CURRENCY_ID": fields["CURRENCY_ID"],
+                "COMMENTS": fields["COMMENTS"],
+            }
+            if stage_id:
+                basic_fields["STAGE_ID"] = stage_id
+            if "CLOSEDATE" in fields:
+                basic_fields["CLOSEDATE"] = fields["CLOSEDATE"]
+            await self._call("crm.deal.update", {"id": deal_id, "fields": basic_fields})
+            return deal_id
+
+    async def create_or_update_deal(
+        self,
+        order: OrderData,
+        contact_id: Optional[int] = None,
+        stage_id: Optional[str] = "UC_MG82DT"
+    ) -> tuple[int, bool]:
+        """
+        Умное создание/обновление сделки:
+        1. Если у контакта уже есть активная сделка (например, созданная из Instagram) -> обновляет её.
+        2. Иначе -> создает новую сделку на этапе stage_id ('Zakaz yaratildi').
+        Возвращает кортеж: (deal_id, is_updated)
+        """
+        if contact_id:
+            active_deal = await self.find_active_deal_by_contact(contact_id)
+            if active_deal:
+                deal_id = int(active_deal["ID"])
+                logger.info(f"Найдена активная сделка #{deal_id} (стадия {active_deal.get('STAGE_ID')}). Обновляем её!")
+                await self.update_deal(deal_id, order, stage_id=stage_id)
+                return deal_id, True
+
+        # Если активной сделки нет — создаем новую
+        deal_id = await self.create_deal(order, contact_id=contact_id, stage_id=stage_id)
+        return deal_id, False
