@@ -38,17 +38,31 @@ def is_order_message(text: str) -> bool:
     """
     Проверяет, является ли сообщение заказом.
     Критерии:
-    - Содержит хештег заказа (например: #10x10... #lz...)
-    - ИЛИ содержит ключевые слова (Summa/Olindi/Razmer) и телефонные номера.
+    - Содержит хештег заказа (#...) + (размер, ключевые слова матраса, телефон или дату)
+    - ИЛИ содержит ключевые слова матраса и (телефон или размер).
     """
     if not text:
         return False
     lower = text.lower()
     has_hashtags = bool(re.search(r"#[A-Za-z0-9_x-]+", text))
-    has_keywords = any(k in lower for k in ["summa", "razmer", "olindi", "olasila", "toper", "matras"])
+    has_size = bool(re.search(r"\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b", text))
     has_phones = bool(re.search(r"\b[0-9]{9}\b", text))
+    has_keywords = any(k in lower for k in [
+        "summa", "сумма", "razmer", "размер", "olindi", "олинди",
+        "olasila", "оласила", "toper", "топер", "matras", "матрас",
+        "paralon", "паралон", "поролон", "purjina", "пружина",
+        "qavat", "кават", "tomoni", "томони", "barxt", "бархат",
+        "namatrasnik", "наматрасник", "dona", "ta", "zet", "зет",
+        "kakos", "кокос"
+    ])
 
-    return (has_hashtags and (has_keywords or has_phones)) or (has_keywords and has_phones)
+    if has_hashtags and (has_size or has_keywords or has_phones):
+        return True
+
+    if has_keywords and (has_phones or has_size):
+        return True
+
+    return False
 
 
 @dp.message(CommandStart())

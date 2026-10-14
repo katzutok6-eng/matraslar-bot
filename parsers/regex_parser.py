@@ -110,25 +110,38 @@ def parse_order_regex(text: str) -> OrderData:
             year = f"20{year}"
         order.delivery_date = f"{year}-{int(month):02d}-{int(day):02d}"
 
-    # 5. Размер (Razmer 200/175, Размер:210/170, 200x180)
-    size_match = re.search(r"(?:razmer|размер|olcham|ольчам|o'lcham)?\s*[:;=-]?\s*(\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b)", text, re.IGNORECASE)
+    # 5. Размер (Razmer 200/175, Размер:210/170, 200x180, 200/188 2ta)
+    size_match = re.search(
+        r"(?:razmer|размер|olcham|ольчам|o'lcham)?\s*[:;=-]?\s*(\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b)(?:\s*([0-9]+\s*(?:ta|dona|шт|d)))?",
+        text,
+        re.IGNORECASE
+    )
     if size_match:
-        order.size = size_match.group(1).replace(" ", "")
+        base_size = size_match.group(1).replace(" ", "")
+        qty = size_match.group(2).strip() if size_match.group(2) else None
+        order.size = f"{base_size} ({qty})" if qty else base_size
 
     # 6. Адрес доставки
-    # Ищем строку перед датой или отдельную строку с адресом
+    # Ищем строку перед датой, исключая характеристики, ткань и финансы
+    ignore_for_address = [
+        "summa", "сумма", "olindi", "олинди", "olasila", "оласила",
+        "narxi", "нархи", "narx", "нарх",
+        "purjina", "пружина", "paralon", "паралон", "поролон", "plotns", "плотност",
+        "kakos", "какос", "кокос", "qora", "кора", "tomoni", "томони", "qavat", "кават",
+        "xb", "хб", "barxt", "бархат", "seriy", "серый", "palasa", "полоса", "admanka",
+        "zet", "зет", "zich", "зич"
+    ]
     for i, line in enumerate(lines):
         if order.delivery_date and (re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", line)):
-            if i > 0 and not any(k in lines[i-1].lower() for k in ["summa", "сумма", "olindi", "олинди", "olasila", "оласила"]):
-                addr_candidate = lines[i-1].strip()
-                # Убираем окончание аффикса -ga / -ka (Limanariyaga -> Limanariya)
-                addr_candidate = re.sub(r"(?i)(ga|ka|ge|ke|га|ка|ге|ке)$", "", addr_candidate).strip()
-                order.delivery_address = addr_candidate
-                break
+            if i > 0:
+                candidate = lines[i-1].strip()
+                cand_lower = candidate.lower()
+                if not any(k in cand_lower for k in ignore_for_address):
+                    addr_candidate = re.sub(r"(?i)(ga|ka|ge|ke|га|ка|ге|ке)$", "", candidate).strip()
+                    order.delivery_address = addr_candidate
+                    break
 
     # 7. Фильтрация строк и извлечение Модели, Характеристик и Материала
-    # ВАЖНО: Любая строка, содержащая телефонный номер (например '881978909 Maniki'),
-    # является строкой контакта и НЕ ДОЛЖНА попадать в модель или описание!
     content_lines: List[str] = []
     
     for line in lines:
@@ -142,8 +155,12 @@ def parse_order_regex(text: str) -> OrderData:
         if line.startswith("#"):
             continue
             
-        # Пропускаем строки с телефонными номерами (даже если там приписано 'Maniki', 'Erimniki', 'Tel' и т.д.)
+        # Пропускаем строки с телефонными номерами
         if re.search(r"\b[0-9]{9}\b", line):
+            continue
+
+        # Пропускаем строки с датами
+        if re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", line):
             continue
             
         content_lines.append(line)
@@ -158,7 +175,7 @@ def parse_order_regex(text: str) -> OrderData:
         clean_decor = re.sub(r"[✨⭐💎👑🌟🔥🏷️]", "", line).strip()
         
         # Проверяем размер
-        if any(k in lower for k in ["razmer", "размер"]) or (order.size and order.size in line):
+        if any(k in lower for k in ["razmer", "размер"]) or re.search(r"\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b", line):
             continue
             
         # Явное указание модели: ✨Модель М3✨ или ⚜Модель М3⚜ или Model M3
