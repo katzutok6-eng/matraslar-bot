@@ -232,19 +232,36 @@ class Bitrix24Client:
     ) -> tuple[int, bool]:
         """
         Умное создание/обновление сделки:
-        1. Если у контакта уже есть активная сделка (например, созданная из Instagram) -> обновляет её.
-        2. Иначе -> создает новую сделку на этапе stage_id ('Zakaz olindi').
+        1. Если заказ уже существует по тегам (#...) -> обновляет его без сброса стадии назад.
+        2. Если у контакта уже есть активная сделка -> обновляет её.
+        3. Иначе -> создает новую сделку на этапе stage_id ('Zakaz olindi').
         Возвращает кортеж: (deal_id, is_updated)
         """
+        advanced_stages = {"UC_B8U2XC", "UC_MG82DT", "UC_NK07QJ", "WON"}
+
+        # 1. Поиск по тегам
+        if order.order_tags:
+            existing_by_tag = await self.find_deal_by_tags(order.order_tags)
+            if existing_by_tag:
+                deal_id = int(existing_by_tag["ID"])
+                curr_stage = existing_by_tag.get("STAGE_ID")
+                effective_stage = curr_stage if curr_stage in advanced_stages else stage_id
+                logger.info(f"Сделка #{deal_id} найдена по тегам (стадия: {curr_stage}). Обновляем без отката стадии.")
+                await self.update_deal(deal_id, order, stage_id=effective_stage)
+                return deal_id, True
+
+        # 2. Поиск по контакту
         if contact_id:
             active_deal = await self.find_active_deal_by_contact(contact_id)
             if active_deal:
                 deal_id = int(active_deal["ID"])
-                logger.info(f"Найдена активная сделка #{deal_id} (стадия {active_deal.get('STAGE_ID')}). Обновляем её!")
-                await self.update_deal(deal_id, order, stage_id=stage_id)
+                curr_stage = active_deal.get("STAGE_ID")
+                effective_stage = curr_stage if curr_stage in advanced_stages else stage_id
+                logger.info(f"Найдена активная сделка контакта #{deal_id} (стадия: {curr_stage}). Обновляем её.")
+                await self.update_deal(deal_id, order, stage_id=effective_stage)
                 return deal_id, True
 
-        # Если активной сделки нет — создаем новую
+        # 3. Создаем новую сделку
         deal_id = await self.create_deal(order, contact_id=contact_id, stage_id=stage_id)
         return deal_id, False
 
@@ -310,3 +327,122 @@ class Bitrix24Client:
                     logger.warning(f"Не удалось обновить стадию сделки #{deal_id}: {e}")
 
         return updated_deal_ids
+
+    async def find_deal_by_tags(self, tags: List[str]) -> Optional[Dict[str, Any]]:
+        """Ищет сделку по одному из хештегов заказа."""
+        if not tags:
+            return None
+        for tag in tags:
+            clean_tag = tag.strip()
+            if not clean_tag:
+                continue
+            try:
+                res = await self._call("crm.deal.list", {
+                    "filter": {"%TITLE": clean_tag},
+                    "order": {"ID": "DESC"},
+                    "select": ["ID", "TITLE", "STAGE_ID", "UF_CRM_DELIVERY_MAN"]
+                })
+                deals = res.get("result", [])
+                if deals:
+                    return deals[0]
+
+                res_comm = await self._call("crm.deal.list", {
+                    "filter": {"%COMMENTS": clean_tag},
+                    "order": {"ID": "DESC"},
+                    "select": ["ID", "TITLE", "STAGE_ID", "UF_CRM_DELIVERY_MAN"]
+                })
+                deals_comm = res_comm.get("result", [])
+                if deals_comm:
+                    return deals_comm[0]
+            except Exception as e:
+                logger.warning(f"Ошибка поиска сделки по тегу {clean_tag}: {e}")
+        return None
+
+    async def find_deal_by_phones(self, phones: List[str]) -> Optional[Dict[str, Any]]:
+        """Ищет сделку по номерам телефона клиента."""
+        if not phones:
+            return None
+        for p in phones:
+            try:
+                clean_phone = re.sub(r"[^\d+]", "", p)
+                contact_id = await self.find_contact_by_phone(clean_phone)
+                if contact_id:
+                    deal = await self.find_active_deal_by_contact(contact_id)
+                    if deal:
+                        return deal
+
+                raw_digits = re.sub(r"\D", "", p)
+                if len(raw_digits) >= 9:
+                    sub = raw_digits[-9:]
+                    res = await self._call("crm.deal.list", {
+                        "filter": {"%COMMENTS": sub},
+                        "order": {"ID": "DESC"},
+                        "select": ["ID", "TITLE", "STAGE_ID", "UF_CRM_DELIVERY_MAN"]
+                    })
+                    deals = res.get("result", [])
+                    if deals:
+                        return deals[0]
+            except Exception as e:
+                logger.warning(f"Ошибка поиска сделки по телефону {p}: {e}")
+        return None
+
+    async def find_deal_by_id(self, deal_id: int) -> Optional[Dict[str, Any]]:
+        """Получает данные сделки по её ID."""
+        try:
+            res = await self._call("crm.deal.get", {"id": deal_id})
+            return res.get("result")
+        except Exception as e:
+            logger.warning(f"Ошибка получения сделки #{deal_id}: {e}")
+        return None
+
+    async def find_deal_from_text(self, text: str) -> Optional[Dict[str, Any]]:
+        """Умный поиск сделки из текста (по ID, хештегам или номерам телефонов)."""
+        if not text:
+            return None
+
+        # 1. Поиск прямого ID сделки (#123, Сделка #123, details/123/)
+        id_match = re.search(r"(?:сделка|deal|zakaz|заказ)\s*#?\s*(\d+)", text, re.IGNORECASE)
+        if not id_match:
+            id_match = re.search(r"/crm/deal/details/(\d+)/", text)
+        if id_match:
+            deal = await self.find_deal_by_id(int(id_match.group(1)))
+            if deal:
+                return deal
+
+        # 2. Поиск по хештегам (#19x10x108, #lz36, etc.)
+        tags = re.findall(r"#[A-Za-z0-9_x-]+", text)
+        if tags:
+            deal = await self.find_deal_by_tags(tags)
+            if deal:
+                return deal
+
+        # 3. Поиск по телефонам (+998...)
+        phones = re.findall(r"(?:\+?998)?[\s-]?\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}", text)
+        if phones:
+            deal = await self.find_deal_by_phones(phones)
+            if deal:
+                return deal
+
+        return None
+
+    async def update_deal_stage_and_courier(
+        self,
+        deal_id: int,
+        stage_id: str,
+        courier_id: Optional[int] = None
+    ) -> bool:
+        """Переводит сделку на этап stage_id и опционально проставляет курьера."""
+        fields: Dict[str, Any] = {"STAGE_ID": stage_id}
+        if courier_id is not None:
+            fields["UF_CRM_DELIVERY_MAN"] = courier_id
+
+        try:
+            await self._call("crm.deal.update", {
+                "id": deal_id,
+                "fields": fields
+            })
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка обновления сделки #{deal_id}: {e}")
+            return False
+

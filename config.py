@@ -17,11 +17,18 @@ class Settings(BaseSettings):
     # Стадия за 1 день до готовности / доставки ("Zakaz tayyor bolish kuni")
     READY_DATE_STAGE_ID: str = "UC_B8U2XC"
 
+    # Стадия готовности ("Zakaz yaratildi")
+    ZAKAZ_YARATILDI_STAGE_ID: str = "UC_MG82DT"
+
+    # Стадия доставки ("Dostavka")
+    DOSTAVKA_STAGE_ID: str = "UC_NK07QJ"
+
     # AI API Keys (опционально, для интеллектуального парсинга сленга)
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
 
     # Коды пользовательских полей в Битрикс24 (UF_CRM_...)
+    UF_CRM_DELIVERY_MAN: str = "UF_CRM_DELIVERY_MAN"
     UF_CRM_TAGS: str = "UF_CRM_TAGS"
     UF_CRM_MATTRESS_SIZE: str = "UF_CRM_MATTRESS_SIZE"
     UF_CRM_MATERIAL: str = "UF_CRM_MATERIAL"
@@ -31,6 +38,13 @@ class Settings(BaseSettings):
     UF_CRM_BALANCE: str = "UF_CRM_BALANCE"
     UF_CRM_DELIVERY_ADDR: str = "UF_CRM_DELIVERY_ADDR"
     UF_CRM_DELIVERY_DATE: str = "UF_CRM_DELIVERY_DATE"
+
+    # Справочник курьеров (ID значений списочного поля UF_CRM_DELIVERY_MAN)
+    COURIER_MAP: dict = {
+        "orif": {"id": 45, "name": "Orif"},
+        "bilol": {"id": 47, "name": "Bilol"},
+        "zohit": {"id": 49, "name": "Zohit"}
+    }
 
     model_config = SettingsConfigDict(
         env_file=".env",

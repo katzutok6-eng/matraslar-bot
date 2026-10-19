@@ -18,6 +18,7 @@ from aiogram.client.default import DefaultBotProperties
 from config import settings
 from bitrix_client import Bitrix24Client
 from parsers.service import parse_order
+from cache_manager import save_message_deal, get_deal_by_message
 
 # Настройка логирования
 logging.basicConfig(
@@ -65,6 +66,32 @@ def is_order_message(text: str) -> bool:
     return False
 
 
+RE_TAYYOR = re.compile(r"\b(tayyor|tayor|тай[её]р|тайор)\b", re.IGNORECASE)
+
+COURIER_RULES = [
+    ("Orif", 45, re.compile(r"\b(orif|ориф|arif|ариф)(?:ga)?\b", re.IGNORECASE)),
+    ("Bilol", 47, re.compile(r"\b(bilol|билол|belol|белол)(?:ga)?\b", re.IGNORECASE)),
+    ("Zohit", 49, re.compile(r"\b(zohi[td]|зохи[тд]|zoxi[td])(?:ga)?\b", re.IGNORECASE)),
+]
+
+
+def parse_action_from_message(text: str):
+    """Определяет, является ли сообщение командой изменения стадии (tayyor или имя доставщика)."""
+    if not text:
+        return None
+
+    # 1. Проверяем доставщиков (Orif, Bilol, Zohit)
+    for name, cid, pat in COURIER_RULES:
+        if pat.search(text):
+            return {"type": "delivery", "courier_name": name, "courier_id": cid}
+
+    # 2. Проверяем статус готовности (tayyor)
+    if RE_TAYYOR.search(text):
+        return {"type": "ready"}
+
+    return None
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.reply(
@@ -94,13 +121,97 @@ async def handle_group_message(message: Message):
     if allowed_chats and message.chat.id not in allowed_chats:
         return
 
-    # Фильтруем обычные сообщения/флуд
+    # -------------------------------------------------------------
+    # 1. Проверяем, является ли сообщение действием (tayyor / доставщик)
+    # -------------------------------------------------------------
+    action_info = parse_action_from_message(text)
+    if action_info:
+        deal_id = None
+
+        # А. Если ответили (reply) на сообщение заказа
+        if message.reply_to_message:
+            replied_msg = message.reply_to_message
+            deal_id = get_deal_by_message(replied_msg.chat.id, replied_msg.message_id)
+
+            if not deal_id:
+                replied_text = replied_msg.text or replied_msg.caption or ""
+                deal_data = await bitrix_client.find_deal_from_text(replied_text)
+                if deal_data:
+                    deal_id = int(deal_data["ID"])
+                    save_message_deal(replied_msg.chat.id, replied_msg.message_id, deal_id)
+
+        # Б. Если указали тег или номер заказа в самом сообщении (например: "tayyor #19x10x108")
+        if not deal_id:
+            deal_data = await bitrix_client.find_deal_from_text(text)
+            if deal_data:
+                deal_id = int(deal_data["ID"])
+
+        if deal_id:
+            deal_url = bitrix_client.get_deal_url(deal_id)
+
+            # Перевод на этап "Zakaz yaratildi"
+            if action_info["type"] == "ready":
+                ok = await bitrix_client.update_deal_stage_and_courier(
+                    deal_id=deal_id,
+                    stage_id=settings.ZAKAZ_YARATILDI_STAGE_ID
+                )
+                if ok:
+                    await message.reply(
+                        f"✅ <a href=\"{deal_url}\">Сделка #{deal_id}</a> переведена на этап <b>Zakaz yaratildi</b>!",
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
+                else:
+                    await message.reply("⚠️ Ошибка при обновлении этапа сделки в Битрикс24.")
+                return
+
+            # Перевод на этап "Dostavka" + выбор доставщика
+            elif action_info["type"] == "delivery":
+                courier_name = action_info["courier_name"]
+                courier_id = action_info["courier_id"]
+                ok = await bitrix_client.update_deal_stage_and_courier(
+                    deal_id=deal_id,
+                    stage_id=settings.DOSTAVKA_STAGE_ID,
+                    courier_id=courier_id
+                )
+                if ok:
+                    await message.reply(
+                        f"✅ <a href=\"{deal_url}\">Сделка #{deal_id}</a> переведена на этап <b>Dostavka</b>!\n"
+                        f"🚚 Доставщик: <b>{courier_name}</b>",
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
+                else:
+                    await message.reply("⚠️ Ошибка при назначении доставщика в Битрикс24.")
+                return
+
+        # Если был явный reply или короткое сообщение с именем/tayyor, но сделку найти не удалось
+        if message.reply_to_message or len(text.strip().split()) <= 3:
+            await message.reply(
+                "⚠️ Не удалось найти сделку в Битрикс24 по этому заказу.\n"
+                "Убедитесь, что вы отвечаете (reply) на сообщение с заказом, где есть хештег (#...) или номер телефона.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+    # -------------------------------------------------------------
+    # 2. Обработка входящего заказа
+    # -------------------------------------------------------------
     if not is_order_message(text):
         return
 
     logger.info(f"Получен заказ в чате {message.chat.id} от @{message.from_user.username or message.from_user.id}")
 
     try:
+        # Проверяем, не существует ли уже сделка для этого заказа (например, отправлена из 1-й группы и теперь скопирована во 2-ю группу доставки)
+        existing_deal = await bitrix_client.find_deal_from_text(text)
+        if existing_deal:
+            deal_id = int(existing_deal["ID"])
+            logger.info(f"Заказ уже существует в Битрикс24: Сделка #{deal_id}. Связываем сообщение {message.message_id} в чате {message.chat.id}")
+            save_message_deal(message.chat.id, message.message_id, deal_id)
+            # Не создаем дубликат и не спамим повторными оповещениями в группе доставки
+            return
+
         # 1. Интеллектуальный парсинг заказа (AI или быстрый Regex fallback)
         order = await parse_order(
             text=text,
@@ -118,12 +229,16 @@ async def handle_group_message(message: Message):
             except Exception as e:
                 logger.warning(f"Не удалось связать контакт: {e}")
 
-        # 3. Умное создание или обновление существующей сделки (например, из Instagram)
+        # 3. Умное создание или обновление существующей сделки
         deal_id, is_updated = await bitrix_client.create_or_update_deal(
             order,
             contact_id=contact_id,
             stage_id=settings.DEFAULT_STAGE_ID
         )
+
+        # Сохраняем связку сообщения Telegram со сделкой в кеш
+        save_message_deal(message.chat.id, message.message_id, deal_id)
+
         deal_url = bitrix_client.get_deal_url(deal_id)
 
         # 4. Лаконичный ответ в группу: галочка, статус и ссылка на сделку
