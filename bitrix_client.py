@@ -174,7 +174,7 @@ class Bitrix24Client:
             logger.warning(f"Ошибка поиска активной сделки для контакта {contact_id}: {e}")
         return None
 
-    async def create_deal(self, order: OrderData, contact_id: Optional[int] = None, stage_id: Optional[str] = "UC_MG82DT") -> int:
+    async def create_deal(self, order: OrderData, contact_id: Optional[int] = None, stage_id: Optional[str] = "UC_5Z222Q") -> int:
         """Создает сделку в Битрикс24 со всеми стандартными и пользовательскими полями."""
         fields = self._build_deal_fields(order, stage_id=stage_id, contact_id=contact_id)
 
@@ -200,7 +200,7 @@ class Bitrix24Client:
             res = await self._call("crm.deal.add", {"fields": basic_fields})
             return int(res["result"])
 
-    async def update_deal(self, deal_id: int, order: OrderData, stage_id: Optional[str] = "UC_MG82DT") -> int:
+    async def update_deal(self, deal_id: int, order: OrderData, stage_id: Optional[str] = "UC_5Z222Q") -> int:
         """Обновляет существующую сделку (из Instagram или CRM) новыми деталями заказа."""
         fields = self._build_deal_fields(order, stage_id=stage_id)
         # При обновлении SOURCE_ID не перезаписываем, чтобы сохранить исходный источник (например, INSTAGRAM)
@@ -228,12 +228,12 @@ class Bitrix24Client:
         self,
         order: OrderData,
         contact_id: Optional[int] = None,
-        stage_id: Optional[str] = "UC_MG82DT"
+        stage_id: Optional[str] = "UC_5Z222Q"
     ) -> tuple[int, bool]:
         """
         Умное создание/обновление сделки:
         1. Если у контакта уже есть активная сделка (например, созданная из Instagram) -> обновляет её.
-        2. Иначе -> создает новую сделку на этапе stage_id ('Zakaz yaratildi').
+        2. Иначе -> создает новую сделку на этапе stage_id ('Zakaz olindi').
         Возвращает кортеж: (deal_id, is_updated)
         """
         if contact_id:
@@ -247,3 +247,66 @@ class Bitrix24Client:
         # Если активной сделки нет — создаем новую
         deal_id = await self.create_deal(order, contact_id=contact_id, stage_id=stage_id)
         return deal_id, False
+
+    async def move_upcoming_deals_to_ready_stage(
+        self,
+        from_stages: Optional[List[str]] = None,
+        to_stage: str = "UC_B8U2XC",
+        days_before: int = 1
+    ) -> List[int]:
+        """
+        Проверяет все открытые сделки на этапах from_stages (по умолчанию 'Zakaz olindi' и 'Zakaz yaratildi').
+        Если дата готовности/доставки наступает через days_before дней или раньше (сегодня/завтра),
+        переводит сделку на этап to_stage ('Zakaz tayyor bolish kuni').
+        """
+        if from_stages is None:
+            from_stages = ["UC_5Z222Q", "UC_MG82DT"]
+
+        from datetime import datetime, timezone, timedelta
+        tashkent_tz = timezone(timedelta(hours=5))
+        today = datetime.now(tashkent_tz).date()
+        target_date = today + timedelta(days=days_before)
+
+        try:
+            res = await self._call("crm.deal.list", {
+                "filter": {
+                    "STAGE_ID": from_stages,
+                    "CLOSED": "N"
+                },
+                "select": ["ID", "TITLE", "STAGE_ID", "UF_CRM_DELIVERY_DATE", "CLOSEDATE"]
+            })
+            deals = res.get("result", [])
+        except Exception as e:
+            logger.error(f"Ошибка получения сделок для проверки дат готовности: {e}")
+            return []
+
+        updated_deal_ids = []
+        for d in deals:
+            deal_id = int(d["ID"])
+            raw_date = d.get("UF_CRM_DELIVERY_DATE") or d.get("CLOSEDATE")
+            if not raw_date:
+                continue
+
+            date_str = str(raw_date)[:10]
+            try:
+                deal_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+
+            # Игнорируем некорректные даты далеко в прошлом (например опечатки года 0202)
+            if deal_date.year < 2024:
+                continue
+
+            # Если до даты доставки остался 1 день или меньше
+            if deal_date <= target_date:
+                try:
+                    await self._call("crm.deal.update", {
+                        "id": deal_id,
+                        "fields": {"STAGE_ID": to_stage}
+                    })
+                    updated_deal_ids.append(deal_id)
+                    logger.info(f"Сделка #{deal_id} ({d.get('TITLE')}) переведена на этап '{to_stage}' (дата: {deal_date})")
+                except Exception as e:
+                    logger.warning(f"Не удалось обновить стадию сделки #{deal_id}: {e}")
+
+        return updated_deal_ids

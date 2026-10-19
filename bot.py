@@ -168,6 +168,26 @@ async def start_web_server():
         logger.warning(f"Не удалось запустить health check сервер (не критично): {e}")
 
 
+async def schedule_daily_stage_checker():
+    """Периодически проверяет даты заказов и переводит их в 'Zakaz tayyor bolish kuni' за 1 день до срока."""
+    await asyncio.sleep(5)
+    while True:
+        try:
+            logger.info("Проверка дат заказов для перевода в 'Zakaz tayyor bolish kuni'...")
+            updated = await bitrix_client.move_upcoming_deals_to_ready_stage(
+                from_stages=[settings.DEFAULT_STAGE_ID, "UC_MG82DT"],
+                to_stage=settings.READY_DATE_STAGE_ID,
+                days_before=1
+            )
+            if updated:
+                logger.info(f"Автоматически переведены на этап 'Zakaz tayyor bolish kuni': {updated}")
+        except Exception as e:
+            logger.error(f"Ошибка в фоновом чезере стадий: {e}")
+
+        # Проверяем каждые 30 минут
+        await asyncio.sleep(1800)
+
+
 async def main():
     if not settings.BOT_TOKEN or settings.BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
         print("\n[!] ОШИБКА: Задайте токен бота BOT_TOKEN в файле .env")
@@ -178,6 +198,8 @@ async def main():
     
     # Запускаем health check сервер в фоне для облака
     await start_web_server()
+    # Запускаем автоматический перевод стадий за 1 день до даты готовности
+    asyncio.create_task(schedule_daily_stage_checker())
     await dp.start_polling(bot)
 
 

@@ -11,8 +11,11 @@ class Settings(BaseSettings):
     # Bitrix24 Webhook URL
     BITRIX_WEBHOOK_URL: str = "https://matraslar.bitrix24.uz/rest/7/4n7isora87z2wykc/"
     
-    # Стадия сделки по умолчанию ("Zakaz yaratildi")
-    DEFAULT_STAGE_ID: str = "UC_MG82DT"
+    # Стадия сделки по умолчанию при создании из Telegram ("Zakaz olindi")
+    DEFAULT_STAGE_ID: str = "UC_5Z222Q"
+
+    # Стадия за 1 день до готовности / доставки ("Zakaz tayyor bolish kuni")
+    READY_DATE_STAGE_ID: str = "UC_B8U2XC"
 
     # AI API Keys (опционально, для интеллектуального парсинга сленга)
     GEMINI_API_KEY: Optional[str] = None
