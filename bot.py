@@ -149,20 +149,16 @@ async def handle_group_message(message: Message):
         if deal_id:
             deal_url = bitrix_client.get_deal_url(deal_id)
 
-            # Перевод на этап "Zakaz yaratildi"
+            # Перевод на этап "Zakaz yaratildi" (без ответа в чат по запросу)
             if action_info["type"] == "ready":
                 ok = await bitrix_client.update_deal_stage_and_courier(
                     deal_id=deal_id,
                     stage_id=settings.ZAKAZ_YARATILDI_STAGE_ID
                 )
                 if ok:
-                    await message.reply(
-                        f"✅ <a href=\"{deal_url}\">Сделка #{deal_id}</a> переведена на этап <b>Zakaz yaratildi</b>!",
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True
-                    )
+                    logger.info(f"Сделка #{deal_id} успешно переведена на этап Zakaz yaratildi (без сообщения в чат)")
                 else:
-                    await message.reply("⚠️ Ошибка при обновлении этапа сделки в Битрикс24.")
+                    logger.warning(f"Ошибка обновления этапа для сделки #{deal_id}")
                 return
 
             # Перевод на этап "Dostavka" + выбор доставщика
@@ -185,14 +181,15 @@ async def handle_group_message(message: Message):
                     await message.reply("⚠️ Ошибка при назначении доставщика в Битрикс24.")
                 return
 
-        # Если был явный reply или короткое сообщение с именем/tayyor, но сделку найти не удалось
-        if message.reply_to_message or len(text.strip().split()) <= 3:
-            await message.reply(
-                "⚠️ Не удалось найти сделку в Битрикс24 по этому заказу.\n"
-                "Убедитесь, что вы отвечаете (reply) на сообщение с заказом, где есть хештег (#...) или номер телефона.",
-                parse_mode=ParseMode.HTML
-            )
-            return
+        # По поводу tayyor ничего не пишем в чат; оповещаем только если не удалось найти сделку для доставщика
+        if action_info["type"] != "ready":
+            if message.reply_to_message or len(text.strip().split()) <= 3:
+                await message.reply(
+                    "⚠️ Не удалось найти сделку в Битрикс24 по этому заказу.\n"
+                    "Убедитесь, что вы отвечаете (reply) на сообщение с заказом, где есть хештег (#...) или номер телефона.",
+                    parse_mode=ParseMode.HTML
+                )
+        return
 
     # -------------------------------------------------------------
     # 2. Обработка входящего заказа
