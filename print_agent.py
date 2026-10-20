@@ -10,6 +10,11 @@ import logging
 import urllib.request
 import urllib.error
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # Настройка логирования в консоль
 logging.basicConfig(
     level=logging.INFO,
@@ -23,11 +28,13 @@ SERVER_URL = "https://matraslar-bot.onrender.com"
 POLL_INTERVAL_SEC = 2.5
 SECRET_TOKEN = "matraslar_print_secret_2026"
 
-# Попытка импорта Windows-печати (win32print)
+# Попытка импорта Windows-печати (win32print, win32ui)
 try:
     import win32print
     import win32ui
-    from PIL import Image, ImageDraw, ImageFont
+    import win32con
+    from PIL import Image, ImageDraw, ImageFont, ImageWin
+    from label_image_builder import create_label_image
     HAS_WIN32 = True
 except ImportError:
     HAS_WIN32 = False
@@ -104,12 +111,37 @@ def generate_tspl_bytes(label: dict) -> bytes:
 
 
 def print_label_raw(printer_name: str, label: dict) -> bool:
-    """Отправляет TSPL команды напрямую в очередь печати Windows."""
+    """Печатает наклейку через Windows GDI драйвер с автоматическим откатом на TSPL."""
     if not HAS_WIN32 or not printer_name:
         # Режим тестирования в консоль
         logger.info(f"[ТЕСТОВАЯ ПЕЧАТЬ] Наклейка:\n{json.dumps(label, ensure_ascii=False, indent=2)}")
         return True
 
+    # 1. Попытка GDI печати через драйвер (идеальные шрифты и центровка)
+    try:
+        img = create_label_image(label)
+        hDC = win32ui.CreateDC()
+        hDC.CreatePrinterDC(printer_name)
+        try:
+            w = hDC.GetDeviceCaps(win32con.HORZRES)
+            h = hDC.GetDeviceCaps(win32con.VERTRES)
+            hDC.StartDoc("Matraslar Label")
+            hDC.StartPage()
+
+            dib = ImageWin.Dib(img)
+            dib.draw(hDC.GetHandleOutput(), (0, 0, w, h))
+
+            hDC.EndPage()
+            hDC.EndDoc()
+        finally:
+            hDC.DeleteDC()
+
+        logger.info(f"✅ Успешно напечатана наклейка (GDI): {label.get('size')} для {label.get('code')}")
+        return True
+    except Exception as e:
+        logger.warning(f"Предупреждение GDI печати ({e}), пробуем прямой вывод RAW TSPL...")
+
+    # 2. Откат на прямые команды TSPL
     try:
         raw_data = generate_tspl_bytes(label)
         hPrinter = win32print.OpenPrinter(printer_name)
@@ -124,7 +156,7 @@ def print_label_raw(printer_name: str, label: dict) -> bool:
         finally:
             win32print.ClosePrinter(hPrinter)
 
-        logger.info(f"✅ Успешно напечатана наклейка: {label.get('size')} для {label.get('code')}")
+        logger.info(f"✅ Успешно напечатана наклейка (RAW TSPL): {label.get('size')} для {label.get('code')}")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка отправки на принтер {printer_name}: {e}")
