@@ -68,56 +68,87 @@ def find_ipos_printer():
 def generate_tspl_bytes(label: dict) -> bytes:
     """
     Генерирует бинарные команды TSPL для термопринтера 203 DPI (размер 58х100 мм).
-    58 мм = ~464 точки, 100 мм = ~800 точек.
+    Сверхкомпактная верстка: общая высота всего ~480 точек при высоте наклейки 800 точек.
+    Гарантированно умещается в 1 этикетку с огромным запасом (4 см) и не перелезает на 2-ю.
     """
-    code = label.get("code", "—")
-    size = label.get("size", "—")
-    phone = label.get("phone", "—")
-    address = label.get("address", "—")
-    balance = label.get("balance_due", "—")
+    code = str(label.get("code", "—"))
+    size = str(label.get("size", "—"))
+    phone = str(label.get("phone", "—"))
+    address = str(label.get("address", "—"))
+    balance = str(label.get("balance_due", "—"))
 
-    # Формируем TSPL команды
     commands = [
         "SIZE 58 mm, 100 mm",
         "GAP 2 mm, 0 mm",
         "DIRECTION 1,0",
+        "CODEPAGE 1251",
         "CLS",
         # Рамка этикетки
-        "BOX 10,10,454,790,3",
+        "BOX 10,10,440,510,2",
         # Код заказа
-        "TEXT 30,40,\"TSS24.BF2\",0,1,1,\"KOD:\"",
-        f"TEXT 30,70,\"TSS24.BF2\",0,2,2,\"{code[:24]}\"",
-        "BAR 20,150,424,3",
-        # Размер изделия (крупно)
-        "TEXT 30,170,\"TSS24.BF2\",0,1,1,\"RAZMERI:\"",
-        f"TEXT 30,200,\"TSS24.BF2\",0,2,2,\"{size[:24]}\"",
-        "BAR 20,290,424,3",
+        "TEXT 25,25,\"3\",0,1,1,\"KOD:\"",
+        f"TEXT 25,50,\"3\",0,1,2,\"{code[:26]}\"",
+        "BAR 20,105,410,2",
+        # Размер изделия
+        "TEXT 25,120,\"3\",0,1,1,\"RAZMERI:\"",
+        f"TEXT 25,145,\"3\",0,2,2,\"{size[:20]}\"",
+        "BAR 20,200,410,2",
         # Телефон
-        "TEXT 30,310,\"TSS24.BF2\",0,1,1,\"NOMERI:\"",
-        f"TEXT 30,340,\"TSS24.BF2\",0,1,2,\"{phone[:30]}\"",
-        "BAR 20,430,424,3",
-        # Адрес доставки
-        "TEXT 30,450,\"TSS24.BF2\",0,1,1,\"ADRES:\"",
-        f"TEXT 30,480,\"TSS24.BF2\",0,1,1,\"{address[:40]}\"",
-        "BAR 20,580,424,3",
-        # Остаток к получению (очень крупно)
-        "TEXT 30,600,\"TSS24.BF2\",0,1,1,\"QOGAN SUMMASI:\"",
-        f"TEXT 30,640,\"TSS24.BF2\",0,2,2,\"{balance[:24]}\"",
-        "PRINT 1,1",
-        ""
+        "TEXT 25,215,\"3\",0,1,1,\"NOMERI:\"",
+        f"TEXT 25,240,\"3\",0,1,2,\"{phone[:28]}\"",
+        "BAR 20,295,410,2",
+        # Адрес (с разбивкой на 2 строки если длинный)
+        "TEXT 25,310,\"3\",0,1,1,\"ADRES:\""
     ]
+
+    if len(address) > 26:
+        commands.append(f"TEXT 25,335,\"3\",0,1,1,\"{address[:26]}\"")
+        commands.append(f"TEXT 25,360,\"3\",0,1,1,\"{address[26:52]}\"")
+        commands.append("BAR 20,395,410,2")
+        y_sum = 410
+    else:
+        commands.append(f"TEXT 25,335,\"3\",0,1,1,\"{address[:40]}\"")
+        commands.append("BAR 20,380,410,2")
+        y_sum = 395
+
+    # Остаток к получению
+    commands.append(f"TEXT 25,{y_sum},\"3\",0,1,1,\"QOGAN SUMMASI:\"")
+    commands.append(f"TEXT 25,{y_sum + 30},\"3\",0,2,2,\"{balance[:22]}\"")
+    commands.append("PRINT 1,1")
+    commands.append("")
+
     raw_str = "\r\n".join(commands)
     return raw_str.encode("cp1251", errors="replace")
 
 
 def print_label_raw(printer_name: str, label: dict) -> bool:
-    """Печатает наклейку через Windows GDI драйвер с автоматическим откатом на TSPL."""
+    """Печатает наклейку через прямой RAW TSPL протокол (стоп ровно на зазоре наклейки)."""
     if not HAS_WIN32 or not printer_name:
         # Режим тестирования в консоль
         logger.info(f"[ТЕСТОВАЯ ПЕЧАТЬ] Наклейка:\n{json.dumps(label, ensure_ascii=False, indent=2)}")
         return True
 
-    # 1. Попытка GDI печати через драйвер (идеальные шрифты и центровка)
+    # 1. Прямой аппаратный вывод TSPL (гарантирует точный размер 58х100 мм и стоп по датчику зазора)
+    try:
+        raw_data = generate_tspl_bytes(label)
+        hPrinter = win32print.OpenPrinter(printer_name)
+        try:
+            hJob = win32print.StartDocPrinter(hPrinter, 1, ("Matraslar TSPL Label", None, "RAW"))
+            try:
+                win32print.StartPagePrinter(hPrinter)
+                win32print.WritePrinter(hPrinter, raw_data)
+                win32print.EndPagePrinter(hPrinter)
+            finally:
+                win32print.EndDocPrinter(hPrinter)
+        finally:
+            win32print.ClosePrinter(hPrinter)
+
+        logger.info(f"✅ Напечатана 1 наклейка (TSPL): {label.get('size')} для {label.get('code')}")
+        return True
+    except Exception as e:
+        logger.warning(f"Ошибка прямого вывода TSPL ({e}), пробуем через Windows GDI драйвер...")
+
+    # 2. Запасной вариант через GDI
     try:
         img = create_label_image(label)
         hDC = win32ui.CreateDC()
@@ -125,7 +156,7 @@ def print_label_raw(printer_name: str, label: dict) -> bool:
         try:
             w = hDC.GetDeviceCaps(win32con.HORZRES)
             h = hDC.GetDeviceCaps(win32con.VERTRES)
-            hDC.StartDoc("Matraslar Label")
+            hDC.StartDoc("Matraslar GDI Label")
             hDC.StartPage()
 
             dib = ImageWin.Dib(img)
@@ -136,30 +167,10 @@ def print_label_raw(printer_name: str, label: dict) -> bool:
         finally:
             hDC.DeleteDC()
 
-        logger.info(f"✅ Успешно напечатана наклейка (GDI): {label.get('size')} для {label.get('code')}")
+        logger.info(f"✅ Напечатана 1 наклейка (GDI): {label.get('size')}")
         return True
-    except Exception as e:
-        logger.warning(f"Предупреждение GDI печати ({e}), пробуем прямой вывод RAW TSPL...")
-
-    # 2. Откат на прямые команды TSPL
-    try:
-        raw_data = generate_tspl_bytes(label)
-        hPrinter = win32print.OpenPrinter(printer_name)
-        try:
-            hJob = win32print.StartDocPrinter(hPrinter, 1, ("Matraslar Label", None, "RAW"))
-            try:
-                win32print.StartPagePrinter(hPrinter)
-                win32print.WritePrinter(hPrinter, raw_data)
-                win32print.EndPagePrinter(hPrinter)
-            finally:
-                win32print.EndDocPrinter(hPrinter)
-        finally:
-            win32print.ClosePrinter(hPrinter)
-
-        logger.info(f"✅ Успешно напечатана наклейка (RAW TSPL): {label.get('size')} для {label.get('code')}")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки на принтер {printer_name}: {e}")
+    except Exception as e2:
+        logger.error(f"❌ Ошибка печати: {e2}")
         return False
 
 

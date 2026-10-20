@@ -1,10 +1,11 @@
 from PIL import Image, ImageDraw, ImageFont
+import re
 from typing import Dict, Any
 
 def create_label_image(label: Dict[str, Any]) -> Image.Image:
     """
-    Создает чистое, высококонтрастное черно-белое изображение наклейки 58х100 мм.
-    Разрешение: 464 x 800 пикселей (203 DPI).
+    Создает компактное изображение наклейки 58х100 мм (464 x 800 пикселей при 203 DPI).
+    Гарантированно умещается в 1 этикетку с запасом снизу 100+ пикселей.
     """
     width = 464
     height = 800
@@ -12,68 +13,71 @@ def create_label_image(label: Dict[str, Any]) -> Image.Image:
     img = Image.new("RGB", (width, height), color="white")
     draw = ImageDraw.Draw(img)
 
-    # Внешняя рамка
-    draw.rectangle([10, 10, width - 10, height - 10], outline="black", width=4)
+    # Внешняя рамка (от 15 до 730 пикселей, снизу 70 пикселей чистого запаса до среза)
+    box_bottom = 720
+    draw.rectangle([15, 15, width - 15, box_bottom], outline="black", width=3)
 
-    # Шрифты
+    # Подгрузка шрифтов
     try:
-        font_large = ImageFont.truetype("arialbd.ttf", 36)
-        font_mid = ImageFont.truetype("arialbd.ttf", 30)
-        font_label = ImageFont.truetype("arial.ttf", 22)
-        font_regular = ImageFont.truetype("arial.ttf", 26)
+        font_large = ImageFont.truetype("arialbd.ttf", 32)
+        font_title = ImageFont.truetype("arialbd.ttf", 26)
+        font_label = ImageFont.truetype("arial.ttf", 18)
+        font_regular = ImageFont.truetype("arial.ttf", 22)
     except Exception:
-        font_large = font_mid = font_label = font_regular = ImageFont.load_default()
+        font_large = font_title = font_label = font_regular = ImageFont.load_default()
 
-    code = label.get("code", "—")
-    size = label.get("size", "—")
-    phone = label.get("phone", "—")
-    address = label.get("address", "—")
-    balance = label.get("balance_due", "—")
+    code = str(label.get("code", "—"))
+    size = str(label.get("size", "—"))
+    phone = str(label.get("phone", "—"))
+    address = str(label.get("address", "—"))
+    balance = str(label.get("balance_due", "—"))
 
-    y = 25
+    y = 28
 
     # 1. KOD
     draw.text((25, y), "KOD:", font=font_label, fill="black")
-    y += 30
-    draw.text((25, y), str(code)[:24], font=font_mid, fill="black")
-    y += 50
+    y += 24
+    draw.text((25, y), code[:28], font=font_title, fill="black")
+    y += 38
     draw.line([(20, y), (width - 20, y)], fill="black", width=2)
-    y += 20
+    y += 14
 
-    # 2. RAZMERI (крупно)
+    # 2. RAZMERI
     draw.text((25, y), "RAZMERI:", font=font_label, fill="black")
-    y += 30
-    draw.text((25, y), str(size)[:24], font=font_large, fill="black")
-    y += 55
+    y += 24
+    draw.text((25, y), size[:24], font=font_large, fill="black")
+    y += 42
     draw.line([(20, y), (width - 20, y)], fill="black", width=2)
-    y += 20
+    y += 14
 
     # 3. NOMERI
     draw.text((25, y), "NOMERI:", font=font_label, fill="black")
-    y += 30
-    draw.text((25, y), str(phone)[:28], font=font_mid, fill="black")
-    y += 50
+    y += 24
+    draw.text((25, y), phone[:32], font=font_title, fill="black")
+    y += 38
     draw.line([(20, y), (width - 20, y)], fill="black", width=2)
-    y += 20
+    y += 14
 
-    # 4. ADRES
+    # 4. ADRES (автоперенос, если длинный)
     draw.text((25, y), "ADRES:", font=font_label, fill="black")
-    y += 30
-    # Если адрес длинный, разбиваем на 2 строки
-    addr_str = str(address)
-    if len(addr_str) > 28:
-        draw.text((25, y), addr_str[:28], font=font_regular, fill="black")
-        y += 35
-        draw.text((25, y), addr_str[28:56], font=font_regular, fill="black")
+    y += 24
+    if len(address) > 28:
+        # Делим на 2 строки
+        part1 = address[:28]
+        part2 = address[28:56]
+        draw.text((25, y), part1, font=font_regular, fill="black")
+        y += 28
+        draw.text((25, y), part2, font=font_regular, fill="black")
+        y += 34
     else:
-        draw.text((25, y), addr_str, font=font_regular, fill="black")
-    y += 45
+        draw.text((25, y), address, font=font_regular, fill="black")
+        y += 36
     draw.line([(20, y), (width - 20, y)], fill="black", width=2)
-    y += 25
+    y += 16
 
     # 5. QOGAN SUMMASI
     draw.text((25, y), "QOGAN SUMMASI:", font=font_label, fill="black")
-    y += 35
-    draw.text((25, y), str(balance)[:24], font=font_large, fill="black")
+    y += 26
+    draw.text((25, y), balance[:24], font=font_large, fill="black")
 
     return img
