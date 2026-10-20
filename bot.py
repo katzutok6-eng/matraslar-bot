@@ -18,7 +18,8 @@ from aiogram.client.default import DefaultBotProperties
 from config import settings
 from bitrix_client import Bitrix24Client
 from parsers.service import parse_order
-from cache_manager import save_message_deal, get_deal_by_message
+from cache_manager import save_message_deal, get_deal_by_message, add_print_job, get_pending_print_jobs, mark_print_job_done
+from label_generator import build_order_labels
 
 # Настройка логирования
 logging.basicConfig(
@@ -67,6 +68,7 @@ def is_order_message(text: str) -> bool:
 
 
 RE_TAYYOR = re.compile(r"\b(tayyor|tayor|тай[её]р|тайор)\b", re.IGNORECASE)
+RE_PRINT = re.compile(r"\b(pechat|печать|print|chop|chop\s*etish)\b", re.IGNORECASE)
 
 COURIER_RULES = [
     ("Orif", 45, re.compile(r"\b(orif|ориф|arif|ариф)(?:ga)?\b", re.IGNORECASE)),
@@ -76,7 +78,7 @@ COURIER_RULES = [
 
 
 def parse_action_from_message(text: str):
-    """Определяет, является ли сообщение командой изменения стадии (tayyor или имя доставщика)."""
+    """Определяет, является ли сообщение командой изменения стадии (tayyor, печать или имя доставщика)."""
     if not text:
         return None
 
@@ -89,7 +91,61 @@ def parse_action_from_message(text: str):
     if RE_TAYYOR.search(text):
         return {"type": "ready"}
 
+    # 3. Проверяем команду печати (pechat)
+    if RE_PRINT.search(text):
+        return {"type": "print"}
+
     return None
+
+
+async def queue_deal_print_labels(deal_id: int, fallback_text: str = "") -> int:
+    """Извлекает данные сделки, формирует этикетки 58x100 мм и ставит их в очередь печати."""
+    try:
+        deal_info = await bitrix_client.find_deal_by_id(deal_id)
+        order_text = fallback_text or ""
+        if not order_text and deal_info:
+            order_text = deal_info.get("COMMENTS") or ""
+
+        # Код заказа (#19x10x108 #radal7)
+        code_val = deal_info.get("UF_CRM_TAGS") if deal_info else ""
+        if not code_val and order_text:
+            tags = re.findall(r"#[A-Za-z0-9_x-]+", order_text)
+            code_val = " ".join(tags)
+        if not code_val and deal_info:
+            code_val = deal_info.get("TITLE") or f"Сделка #{deal_id}"
+
+        # Телефоны
+        phones_val = ""
+        if deal_info and deal_info.get("CONTACT_ID"):
+            try:
+                c_data = await bitrix_client._call("crm.contact.get", {"id": deal_info["CONTACT_ID"]})
+                c_phones = c_data.get("result", {}).get("PHONE", [])
+                phones_val = ", ".join(p.get("VALUE") for p in c_phones if p.get("VALUE"))
+            except Exception:
+                pass
+        if not phones_val and order_text:
+            p_list = re.findall(r"(?:\+?998)?[\s-]?\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}", order_text)
+            phones_val = ", ".join(set(p_list))
+
+        addr_val = deal_info.get("UF_CRM_DELIVERY_ADDR") if deal_info else ""
+        balance_val = deal_info.get("UF_CRM_BALANCE") or deal_info.get("OPPORTUNITY") or 0
+        def_size = deal_info.get("UF_CRM_MATTRESS_SIZE") if deal_info else None
+
+        labels = build_order_labels(
+            code=code_val,
+            phones=phones_val,
+            address=addr_val,
+            balance_due=balance_val,
+            text=order_text,
+            default_size=def_size
+        )
+
+        job_id = add_print_job(deal_id, labels)
+        logger.info(f"Задание на печать #{job_id} ({len(labels)} этикеток) добавлено в очередь для сделки #{deal_id}")
+        return job_id
+    except Exception as e:
+        logger.error(f"Ошибка при постановке на печать для сделки #{deal_id}: {e}", exc_info=True)
+        return 0
 
 
 @dp.message(CommandStart())
@@ -149,16 +205,38 @@ async def handle_group_message(message: Message):
         if deal_id:
             deal_url = bitrix_client.get_deal_url(deal_id)
 
-            # Перевод на этап "Zakaz yaratildi" (без ответа в чат по запросу)
+            # Перевод на этап "Zakaz yaratildi" + печать (без ответа в чат по запросу)
             if action_info["type"] == "ready":
                 ok = await bitrix_client.update_deal_stage_and_courier(
                     deal_id=deal_id,
                     stage_id=settings.ZAKAZ_YARATILDI_STAGE_ID
                 )
                 if ok:
-                    logger.info(f"Сделка #{deal_id} успешно переведена на этап Zakaz yaratildi (без сообщения в чат)")
+                    logger.info(f"Сделка #{deal_id} успешно переведена на этап Zakaz yaratildi")
                 else:
                     logger.warning(f"Ошибка обновления этапа для сделки #{deal_id}")
+
+                # Ставим наклейки в очередь печати на ноутбук в цеху
+                replied_text = ""
+                if message.reply_to_message:
+                    replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+                await queue_deal_print_labels(deal_id, fallback_text=replied_text)
+                return
+
+            # Ручная печать наклеек по команде pechat / print
+            elif action_info["type"] == "print":
+                replied_text = ""
+                if message.reply_to_message:
+                    replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+                job_id = await queue_deal_print_labels(deal_id, fallback_text=replied_text)
+                if job_id:
+                    await message.reply(
+                        f"🖨 Заказ отправлен на печать на ноутбук в цеху (<a href=\"{deal_url}\">Сделка #{deal_id}</a>)",
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
+                else:
+                    await message.reply("⚠️ Не удалось поставить заказ в очередь печати.")
                 return
 
             # Перевод на этап "Dostavka" + выбор доставщика
@@ -268,8 +346,31 @@ async def start_web_server():
         async def ping(request):
             return web.Response(text="Bot is running OK", status=200)
 
+        async def get_print_queue(request):
+            token = request.query.get("token")
+            if token != settings.PRINT_SECRET_TOKEN:
+                return web.json_response({"error": "Unauthorized"}, status=401)
+            jobs = get_pending_print_jobs()
+            return web.json_response({"status": "ok", "jobs": jobs})
+
+        async def ack_print_job(request):
+            token = request.query.get("token")
+            if token != settings.PRINT_SECRET_TOKEN:
+                return web.json_response({"error": "Unauthorized"}, status=401)
+            try:
+                data = await request.json()
+                job_id = data.get("job_id")
+                if job_id:
+                    mark_print_job_done(int(job_id))
+                    return web.json_response({"status": "ok", "job_id": job_id})
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=400)
+            return web.json_response({"error": "Missing job_id"}, status=400)
+
         app.router.add_get("/", ping)
         app.router.add_get("/health", ping)
+        app.router.add_get("/api/print-queue", get_print_queue)
+        app.router.add_post("/api/print-ack", ack_print_job)
 
         runner = web.AppRunner(app)
         await runner.setup()

@@ -110,16 +110,27 @@ def parse_order_regex(text: str) -> OrderData:
             year = f"20{year}"
         order.delivery_date = f"{year}-{int(month):02d}-{int(day):02d}"
 
-    # 5. Размер (Razmer 200/175, Размер:210/170, 200x180, 200/188 2ta)
-    size_match = re.search(
-        r"(?:razmer|размер|olcham|ольчам|o'lcham)?\s*[:;=-]?\s*(\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b)(?:\s*([0-9]+\s*(?:ta|dona|шт|d)))?",
-        text,
+    # 5. Размеры и количество (179х73-1шт, 199х88-1шт, 200/180 2ta, 90/194 (3ta))
+    size_pattern = re.compile(
+        r"(\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b)(?:[-–—\s(]*([0-9]+)\s*(?:ta|dona|шт|d)\)?)?",
         re.IGNORECASE
     )
-    if size_match:
-        base_size = size_match.group(1).replace(" ", "")
-        qty = size_match.group(2).strip() if size_match.group(2) else None
-        order.size = f"{base_size} ({qty})" if qty else base_size
+    items = []
+    for m in size_pattern.finditer(text):
+        base_size = m.group(1).replace(" ", "")
+        qty_str = m.group(2)
+        qty = int(qty_str) if qty_str else 1
+        items.append({"size": base_size, "qty": qty})
+
+    order.items = items
+    if items:
+        size_strs = []
+        for it in items:
+            if it["qty"] > 1:
+                size_strs.append(f"{it['size']} ({it['qty']} шт)")
+            else:
+                size_strs.append(it['size'])
+        order.size = ", ".join(size_strs)
 
     # 6. Адрес доставки
     # Ищем строку перед датой, исключая характеристики, ткань и финансы

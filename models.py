@@ -25,6 +25,10 @@ class OrderData(BaseModel):
         default=None,
         description="Размер изделия (например: '200/175', '200/180')"
     )
+    items: List[dict] = Field(
+        default_factory=list,
+        description="Список отдельных позиций/размеров с количеством [{'size': '179х73', 'qty': 1}, ...]"
+    )
     material: Optional[str] = Field(
         default=None,
         description="Ткань, цвет, боковины (например: 'oq xb yoni jigaren barxt🤎orqasi stop')"

@@ -46,6 +46,9 @@ class Settings(BaseSettings):
         "zohit": {"id": 49, "name": "Zohit"}
     }
 
+    # Секретный токен для подключения локального агента печати на ноутбуке
+    PRINT_SECRET_TOKEN: str = "matraslar_print_secret_2026"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
