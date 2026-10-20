@@ -4,6 +4,7 @@ Print Agent для термопринтера этикеток iPOS MA-0780B (Wi
 """
 
 import sys
+import re
 import time
 import json
 import logging
@@ -66,59 +67,127 @@ def find_ipos_printer():
 
 
 def generate_tspl_bytes(label: dict) -> bytes:
-    """
-    Генерирует бинарные команды TSPL для термопринтера 203 DPI (размер 58х100 мм).
-    Сверхкомпактная верстка: общая высота всего ~480 точек при высоте наклейки 800 точек.
-    Гарантированно умещается в 1 этикетку с огромным запасом (4 см) и не перелезает на 2-ю.
-    """
     code = str(label.get("code", "—"))
     size = str(label.get("size", "—"))
     phone = str(label.get("phone", "—"))
     address = str(label.get("address", "—"))
     balance = str(label.get("balance_due", "—"))
 
-    commands = [
+    # Разделение телефона и имени (чтобы скобки не вылезали за рамку)
+    phone_clean = phone.strip()
+    m_phone = re.match(r"(.*?)\s*\((.*?)\)$", phone_clean)
+    if m_phone:
+        p_num = m_phone.group(1).strip()
+        p_name = f"({m_phone.group(2).strip()})"
+    else:
+        m_p2 = re.match(r"([\+\d\s\-]+)\s+([A-Za-zА-Яа-яЁёЎўҚқҒғҲҳ].*)", phone_clean)
+        if m_p2:
+            p_num = m_p2.group(1).strip()
+            p_name = f"({m_p2.group(2).strip()})"
+        elif len(phone_clean) > 22:
+            idx = phone_clean[:22].rfind(" ")
+            p_num = phone_clean[:idx].strip() if idx > 7 else phone_clean[:22]
+            p_name = phone_clean[len(p_num):].strip()
+        else:
+            p_num = phone_clean
+            p_name = ""
+
+    # Автоперенос адреса
+    words = address.split()
+    addr_lines = []
+    curr_line = ""
+    for w in words:
+        if not curr_line:
+            curr_line = w
+        elif len(curr_line) + 1 + len(w) <= 25:
+            curr_line += " " + w
+        else:
+            addr_lines.append(curr_line)
+            curr_line = w
+    if curr_line:
+        addr_lines.append(curr_line)
+    if not addr_lines:
+        addr_lines = ["—"]
+
+    # Сумма и валюта
+    m_sum = re.match(r"^([\d\s\.,]+)\s*([A-Za-zА-Яа-яЁё]+)?$", balance.strip())
+    if m_sum and len(m_sum.group(1).strip()) <= 10:
+        b_amt = m_sum.group(1).strip()
+        b_curr = m_sum.group(2) or ""
+    else:
+        b_amt = balance.strip()
+        b_curr = ""
+
+    tspl = [
         "SIZE 58 mm, 100 mm",
         "GAP 2 mm, 0 mm",
         "DIRECTION 1,0",
         "CODEPAGE 1251",
         "CLS",
-        # Рамка этикетки
-        "BOX 10,10,440,510,2",
-        # Код заказа
-        "TEXT 25,25,\"3\",0,1,1,\"KOD:\"",
-        f"TEXT 25,50,\"3\",0,1,2,\"{code[:26]}\"",
-        "BAR 20,105,410,2",
-        # Размер изделия
-        "TEXT 25,120,\"3\",0,1,1,\"RAZMERI:\"",
-        f"TEXT 25,145,\"3\",0,2,2,\"{size[:20]}\"",
-        "BAR 20,200,410,2",
-        # Телефон
-        "TEXT 25,215,\"3\",0,1,1,\"NOMERI:\"",
-        f"TEXT 25,240,\"3\",0,1,2,\"{phone[:28]}\"",
-        "BAR 20,295,410,2",
-        # Адрес (с разбивкой на 2 строки если длинный)
-        "TEXT 25,310,\"3\",0,1,1,\"ADRES:\""
+        # Рамка: опущена ниже (Y=35) и увеличена по высоте (Y=665 вместо 510)
+        "BOX 15,35,450,665,2",
+        # 1. KOD
+        'TEXT 25,48,"3",0,1,1,"KOD:"',
+        f'TEXT 25,78,"3",0,1,2,"{code[:25]}"',
+        "BAR 15,138,435,2",
+        # 2. RAZMERI
+        'TEXT 25,150,"3",0,1,1,"RAZMERI:"',
     ]
 
-    if len(address) > 26:
-        commands.append(f"TEXT 25,335,\"3\",0,1,1,\"{address[:26]}\"")
-        commands.append(f"TEXT 25,360,\"3\",0,1,1,\"{address[26:52]}\"")
-        commands.append("BAR 20,395,410,2")
-        y_sum = 410
+    if len(size) <= 10:
+        tspl.append(f'TEXT 25,180,"3",0,2,2,"{size[:10]}"')
     else:
-        commands.append(f"TEXT 25,335,\"3\",0,1,1,\"{address[:40]}\"")
-        commands.append("BAR 20,380,410,2")
-        y_sum = 395
+        tspl.append(f'TEXT 25,180,"3",0,1,2,"{size[:22]}"')
 
-    # Остаток к получению
-    commands.append(f"TEXT 25,{y_sum},\"3\",0,1,1,\"QOGAN SUMMASI:\"")
-    commands.append(f"TEXT 25,{y_sum + 30},\"3\",0,2,2,\"{balance[:22]}\"")
-    commands.append("PRINT 1,1")
-    commands.append("")
+    tspl.extend([
+        "BAR 15,242,435,2",
+        # 3. NOMERI
+        'TEXT 25,254,"3",0,1,1,"NOMERI:"',
+        f'TEXT 25,284,"3",0,1,2,"{p_num[:25]}"',
+    ])
 
-    raw_str = "\r\n".join(commands)
+    if p_name:
+        tspl.append(f'TEXT 25,338,"3",0,1,1,"{p_name[:25]}"')
+
+    tspl.extend([
+        "BAR 15,378,435,2",
+        # 4. ADRES
+        'TEXT 25,390,"3",0,1,1,"ADRES:"',
+    ])
+
+    if len(addr_lines) == 1:
+        tspl.append(f'TEXT 25,424,"3",0,1,1,"{addr_lines[0][:26]}"')
+    elif len(addr_lines) == 2:
+        tspl.append(f'TEXT 25,418,"3",0,1,1,"{addr_lines[0][:26]}"')
+        tspl.append(f'TEXT 25,448,"3",0,1,1,"{addr_lines[1][:26]}"')
+    else:
+        tspl.append(f'TEXT 25,416,"3",0,1,1,"{addr_lines[0][:26]}"')
+        tspl.append(f'TEXT 25,444,"3",0,1,1,"{addr_lines[1][:26]}"')
+        tspl.append(f'TEXT 25,472,"3",0,1,1,"{addr_lines[2][:26]}"')
+
+    tspl.extend([
+        "BAR 15,520,435,2",
+        # 5. QOGAN SUMMASI
+        'TEXT 25,535,"3",0,1,1,"QOGAN SUMMASI:"',
+    ])
+
+    if b_curr:
+        tspl.append(f'TEXT 25,575,"3",0,2,2,"{b_amt}"')
+        curr_x = 25 + len(b_amt) * 32 + 10
+        tspl.append(f'TEXT {curr_x},590,"3",0,1,2,"{b_curr}"')
+    else:
+        if len(b_amt) <= 11:
+            tspl.append(f'TEXT 25,575,"3",0,2,2,"{b_amt}"')
+        else:
+            tspl.append(f'TEXT 25,580,"3",0,1,2,"{b_amt[:25]}"')
+
+    tspl.append("PRINT 1,1")
+    tspl.append("")
+
+    raw_str = "\r\n".join(tspl)
     return raw_str.encode("cp1251", errors="replace")
+
+
 
 
 def print_label_raw(printer_name: str, label: dict) -> bool:
