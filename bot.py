@@ -220,7 +220,10 @@ async def handle_group_message(message: Message):
                 replied_text = ""
                 if message.reply_to_message:
                     replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-                await queue_deal_print_labels(deal_id, fallback_text=replied_text)
+                if getattr(settings, "AUTO_PRINT_ON_READY", False):
+                    await queue_deal_print_labels(deal_id, fallback_text=replied_text)
+                else:
+                    logger.info(f"Печать для сделки #{deal_id} пропущена (AUTO_PRINT_ON_READY=False)")
                 return
 
             # Ручная печать наклеек по команде pechat / print
