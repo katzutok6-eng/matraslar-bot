@@ -282,10 +282,11 @@ async def handle_group_message(message: Message):
 
     try:
         # Проверяем, не существует ли уже сделка для этого заказа (например, отправлена из 1-й группы и теперь скопирована во 2-ю группу доставки)
-        existing_deal = await bitrix_client.find_deal_from_text(text)
+        tags = re.findall(r"#[A-Za-z0-9_x-]+", text)
+        existing_deal = await bitrix_client.find_deal_by_tags(tags) if tags else None
         if existing_deal:
             deal_id = int(existing_deal["ID"])
-            logger.info(f"Заказ уже существует в Битрикс24: Сделка #{deal_id}. Связываем сообщение {message.message_id} в чате {message.chat.id}")
+            logger.info(f"Заказ с тегами {tags} уже существует в Битрикс24: Сделка #{deal_id}. Связываем сообщение {message.message_id} в чате {message.chat.id}")
             save_message_deal(message.chat.id, message.message_id, deal_id)
             # Не создаем дубликат и не спамим повторными оповещениями в группе доставки
             return
@@ -308,10 +309,11 @@ async def handle_group_message(message: Message):
                 logger.warning(f"Не удалось связать контакт: {e}")
 
         # 3. Умное создание или обновление существующей сделки
+        initial_stage = settings.READY_DATE_STAGE_ID if order.delivery_date else settings.DEFAULT_STAGE_ID
         deal_id, is_updated = await bitrix_client.create_or_update_deal(
             order,
             contact_id=contact_id,
-            stage_id=settings.DEFAULT_STAGE_ID
+            stage_id=initial_stage
         )
 
         # Сохраняем связку сообщения Telegram со сделкой в кеш

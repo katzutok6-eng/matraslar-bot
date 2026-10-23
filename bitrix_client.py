@@ -250,14 +250,14 @@ class Bitrix24Client:
                 await self.update_deal(deal_id, order, stage_id=effective_stage)
                 return deal_id, True
 
-        # 2. Поиск по контакту
-        if contact_id:
+        # 2. Поиск по контакту (ТОЛЬКО если заказ без уникальных тегов #...)
+        if contact_id and not order.order_tags:
             active_deal = await self.find_active_deal_by_contact(contact_id)
             if active_deal:
                 deal_id = int(active_deal["ID"])
                 curr_stage = active_deal.get("STAGE_ID")
                 effective_stage = curr_stage if curr_stage in advanced_stages else stage_id
-                logger.info(f"Найдена активная сделка контакта #{deal_id} (стадия: {curr_stage}). Обновляем её.")
+                logger.info(f"Найдена активная сделка контакта #{deal_id} для заказа без тегов (стадия: {curr_stage}). Обновляем её.")
                 await self.update_deal(deal_id, order, stage_id=effective_stage)
                 return deal_id, True
 
