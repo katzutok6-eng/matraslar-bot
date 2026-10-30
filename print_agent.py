@@ -68,6 +68,7 @@ def find_ipos_printer():
 
 def generate_tspl_bytes(label: dict) -> bytes:
     code = str(label.get("code", "—"))
+    product = str(label.get("product", "")).strip() or "Matras"
     size = str(label.get("size", "—"))
     phone = str(label.get("phone", "—"))
     address = str(label.get("address", "—"))
@@ -110,7 +111,7 @@ def generate_tspl_bytes(label: dict) -> bytes:
         addr_lines = ["—"]
 
     # Сумма и валюта
-    m_sum = re.match(r"^([\d\s\.,]+)\s*([A-Za-zА-Яа-яЁё]+)?$", balance.strip())
+    m_sum = re.match(r"^([\d\s\.,]+)\s*([A-Za-zА-Яа-яЁё\$]+)?$", balance.strip())
     if m_sum and len(m_sum.group(1).strip()) <= 10:
         b_amt = m_sum.group(1).strip()
         b_curr = m_sum.group(2) or ""
@@ -124,70 +125,74 @@ def generate_tspl_bytes(label: dict) -> bytes:
         "DIRECTION 1,0",
         "CODEPAGE 1251",
         "CLS",
-        # Рамка: опущена ниже (Y=35) и увеличена по высоте (Y=665 вместо 510)
+        # Рамка: опущена ниже (Y=35) и увеличена по высоте (Y=665)
         "BOX 15,35,450,665,2",
         # 1. KOD
         'TEXT 25,48,"3",0,1,1,"KOD:"',
         f'TEXT 25,78,"3",0,1,2,"{code[:25]}"',
-        "BAR 15,138,435,2",
-        # 2. RAZMERI
-        'TEXT 25,150,"3",0,1,1,"RAZMERI:"',
+        "BAR 15,130,435,2",
+        # 2. MAHSULOT / RAZMERI
+        'TEXT 25,140,"3",0,1,1,"MAHSULOT / RAZMERI:"',
+        f'TEXT 25,168,"3",0,1,2,"{product[:25]}"',
     ]
 
     if len(size) <= 10:
-        tspl.append(f'TEXT 25,180,"3",0,2,2,"{size[:10]}"')
+        tspl.append(f'TEXT 25,220,"3",0,2,2,"{size}"')
     else:
-        tspl.append(f'TEXT 25,180,"3",0,1,2,"{size[:22]}"')
+        tspl.append(f'TEXT 25,220,"3",0,1,2,"{size[:24]}"')
 
     tspl.extend([
-        "BAR 15,242,435,2",
+        "BAR 15,272,435,2",
         # 3. NOMERI
-        'TEXT 25,254,"3",0,1,1,"NOMERI:"',
-        f'TEXT 25,284,"3",0,1,2,"{p_num[:25]}"',
+        'TEXT 25,282,"3",0,1,1,"NOMERI:"',
+        f'TEXT 25,312,"3",0,1,2,"{p_num[:25]}"',
     ])
 
     if p_name:
-        tspl.append(f'TEXT 25,338,"3",0,1,1,"{p_name[:25]}"')
+        tspl.append(f'TEXT 25,355,"3",0,1,1,"{p_name[:25]}"')
 
     tspl.extend([
-        "BAR 15,378,435,2",
+        "BAR 15,395,435,2",
         # 4. ADRES
-        'TEXT 25,390,"3",0,1,1,"ADRES:"',
+        'TEXT 25,405,"3",0,1,1,"ADRES:"',
     ])
 
     if len(addr_lines) == 1:
-        tspl.append(f'TEXT 25,424,"3",0,1,1,"{addr_lines[0][:26]}"')
+        tspl.append(f'TEXT 25,438,"3",0,1,1,"{addr_lines[0][:26]}"')
     elif len(addr_lines) == 2:
-        tspl.append(f'TEXT 25,418,"3",0,1,1,"{addr_lines[0][:26]}"')
-        tspl.append(f'TEXT 25,448,"3",0,1,1,"{addr_lines[1][:26]}"')
+        tspl.append(f'TEXT 25,435,"3",0,1,1,"{addr_lines[0][:26]}"')
+        tspl.append(f'TEXT 25,465,"3",0,1,1,"{addr_lines[1][:26]}"')
     else:
-        tspl.append(f'TEXT 25,416,"3",0,1,1,"{addr_lines[0][:26]}"')
-        tspl.append(f'TEXT 25,444,"3",0,1,1,"{addr_lines[1][:26]}"')
-        tspl.append(f'TEXT 25,472,"3",0,1,1,"{addr_lines[2][:26]}"')
+        tspl.append(f'TEXT 25,430,"3",0,1,1,"{addr_lines[0][:26]}"')
+        tspl.append(f'TEXT 25,458,"3",0,1,1,"{addr_lines[1][:26]}"')
+        tspl.append(f'TEXT 25,486,"3",0,1,1,"{addr_lines[2][:26]}"')
 
     tspl.extend([
         "BAR 15,520,435,2",
         # 5. QOGAN SUMMASI
-        'TEXT 25,535,"3",0,1,1,"QOGAN SUMMASI:"',
+        'TEXT 25,532,"3",0,1,1,"QOGAN SUMMASI:"',
     ])
 
-    if b_curr:
-        tspl.append(f'TEXT 25,575,"3",0,2,2,"{b_amt}"')
+    if balance.strip().endswith("$"):
+        val = balance.strip()[:-1].strip()
+        tspl.append(f'TEXT 25,572,"3",0,2,2,"{val}"')
+        curr_x = 25 + len(val) * 32 + 10
+        tspl.append(f'TEXT {curr_x},585,"3",0,1,2,"$"')
+    elif b_curr:
+        tspl.append(f'TEXT 25,572,"3",0,2,2,"{b_amt}"')
         curr_x = 25 + len(b_amt) * 32 + 10
-        tspl.append(f'TEXT {curr_x},590,"3",0,1,2,"{b_curr}"')
+        tspl.append(f'TEXT {curr_x},585,"3",0,1,2,"{b_curr}"')
     else:
-        if len(b_amt) <= 11:
-            tspl.append(f'TEXT 25,575,"3",0,2,2,"{b_amt}"')
+        if len(b_amt) <= 10:
+            tspl.append(f'TEXT 25,572,"3",0,2,2,"{b_amt}"')
         else:
-            tspl.append(f'TEXT 25,580,"3",0,1,2,"{b_amt[:25]}"')
+            tspl.append(f'TEXT 25,578,"3",0,1,2,"{b_amt[:25]}"')
 
     tspl.append("PRINT 1,1")
     tspl.append("")
 
     raw_str = "\r\n".join(tspl)
     return raw_str.encode("cp1251", errors="replace")
-
-
 
 
 def print_label_raw(printer_name: str, label: dict) -> bool:
@@ -212,7 +217,7 @@ def print_label_raw(printer_name: str, label: dict) -> bool:
         finally:
             win32print.ClosePrinter(hPrinter)
 
-        logger.info(f"✅ Напечатана 1 наклейка (TSPL): {label.get('size')} для {label.get('code')}")
+        logger.info(f"✅ Напечатана 1 наклейка (TSPL): {label.get('product')} {label.get('size')} для {label.get('code')}")
         return True
     except Exception as e:
         logger.warning(f"Ошибка прямого вывода TSPL ({e}), пробуем через Windows GDI драйвер...")

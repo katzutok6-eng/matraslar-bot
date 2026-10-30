@@ -102,6 +102,19 @@ def parse_order_regex(text: str) -> OrderData:
         elif order.total_amount > 0:
             order.balance_due = max(0.0, order.total_amount - order.prepayment_amount)
 
+    # Формула расчета: например, 430-100=330$
+    math_match = re.search(r"(\d[\d\s.,]*)\s*-\s*(\d[\d\s.,]*)\s*=\s*(\d[\d\s.,]*)\s*([$A-Za-z]+)?", text)
+    if math_match:
+        tot = normalize_amount(math_match.group(1))
+        pre = normalize_amount(math_match.group(2))
+        bal = normalize_amount(math_match.group(3))
+        if tot > 0:
+            order.total_amount = tot
+        if pre > 0:
+            order.prepayment_amount = pre
+        if bal > 0:
+            order.balance_due = bal
+
     # 4. Дата доставки (DD.MM.YYYY или YYYY-MM-DD)
     date_matches = re.findall(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", text)
     if date_matches:
@@ -140,14 +153,19 @@ def parse_order_regex(text: str) -> OrderData:
         "purjina", "пружина", "paralon", "паралон", "поролон", "plotns", "плотност",
         "kakos", "какос", "кокос", "qora", "кора", "tomoni", "томони", "qavat", "кават",
         "xb", "хб", "barxt", "бархат", "seriy", "серый", "palasa", "полоса", "admanka",
-        "zet", "зет", "zich", "зич"
+        "zet", "зет", "zich", "зич", "bort", "борт", "namatrasnik", "наматрасник", "chixol", "чехол"
     ]
     for i, line in enumerate(lines):
         if order.delivery_date and (re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", line)):
             if i > 0:
                 candidate = lines[i-1].strip()
                 cand_lower = candidate.lower()
-                if not any(k in cand_lower for k in ignore_for_address):
+                if (
+                    not any(k in cand_lower for k in ignore_for_address)
+                    and "=" not in candidate
+                    and "$" not in candidate
+                    and not re.search(r"^\d+\s*[-+]\s*\d+", candidate)
+                ):
                     addr_candidate = re.sub(r"(?i)(ga|ka|ge|ke|га|ка|ге|ке)$", "", candidate).strip()
                     order.delivery_address = addr_candidate
                     break
