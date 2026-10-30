@@ -48,17 +48,25 @@ class Bitrix24Client:
             return res_data
 
     async def find_contact_by_phone(self, phone: str) -> Optional[int]:
-        """Ищет существующий контакт по номеру телефона."""
+        """Ищет существующий контакт по номеру телефона (с нормализацией +998)."""
         try:
-            # Очищаем телефон для поиска
-            clean_phone = re.sub(r"[^\d+]", "", phone)
-            res = await self._call("crm.contact.list", {
-                "filter": {"PHONE": clean_phone},
-                "select": ["ID", "NAME"]
-            })
-            contacts = res.get("result", [])
-            if contacts:
-                return int(contacts[0]["ID"])
+            raw_digits = re.sub(r"\D", "", phone)
+            search_phones = []
+            if len(raw_digits) == 9:
+                search_phones.extend([f"+998{raw_digits}", raw_digits])
+            elif len(raw_digits) == 12 and raw_digits.startswith("998"):
+                search_phones.extend([f"+{raw_digits}", raw_digits[3:]])
+            else:
+                search_phones.append(phone.strip())
+
+            for p in search_phones:
+                res = await self._call("crm.contact.list", {
+                    "filter": {"PHONE": p},
+                    "select": ["ID", "NAME"]
+                })
+                contacts = res.get("result", [])
+                if contacts:
+                    return int(contacts[0]["ID"])
         except Exception as e:
             logger.warning(f"Не удалось найти контакт по телефону {phone}: {e}")
         return None

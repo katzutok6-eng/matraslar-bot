@@ -50,7 +50,8 @@ class Settings(BaseSettings):
     PRINT_SECRET_TOKEN: str = "matraslar_print_secret_2026"
 
     # Флаг включения автоматической печати при 'tayor' (выключен, пока пользователь не даст команду)
-    AUTO_PRINT_ON_READY: bool = False
+    # Флаг включения автоматической печати при 'tayor'
+    AUTO_PRINT_ON_READY: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

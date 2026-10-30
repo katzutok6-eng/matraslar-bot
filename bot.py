@@ -12,7 +12,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
+from aiogram.types import Message, ReactionTypeEmoji
 from aiogram.client.default import DefaultBotProperties
 
 from config import settings
@@ -204,6 +204,17 @@ async def handle_group_message(message: Message):
                     deal_id = int(deal_data["ID"])
                     save_message_deal(replied_msg.chat.id, replied_msg.message_id, deal_id)
 
+            # Проверяем цепочку реплаев (если ответили на фото или комментарий к заказу)
+            if not deal_id and replied_msg.reply_to_message:
+                parent_msg = replied_msg.reply_to_message
+                deal_id = get_deal_by_message(parent_msg.chat.id, parent_msg.message_id)
+                if not deal_id:
+                    parent_text = parent_msg.text or parent_msg.caption or ""
+                    deal_data = await bitrix_client.find_deal_from_text(parent_text)
+                    if deal_data:
+                        deal_id = int(deal_data["ID"])
+                        save_message_deal(parent_msg.chat.id, parent_msg.message_id, deal_id)
+
         # Б. Если указали тег или номер заказа в самом сообщении (например: "tayyor #19x10x108")
         if not deal_id:
             deal_data = await bitrix_client.find_deal_from_text(text)
@@ -213,7 +224,7 @@ async def handle_group_message(message: Message):
         if deal_id:
             deal_url = bitrix_client.get_deal_url(deal_id)
 
-            # Перевод на этап "Zakaz yaratildi" + печать (без ответа в чат по запросу)
+            # Перевод на этап "Zakaz yaratildi" + печать
             if action_info["type"] == "ready":
                 ok = await bitrix_client.update_deal_stage_and_courier(
                     deal_id=deal_id,
@@ -221,6 +232,11 @@ async def handle_group_message(message: Message):
                 )
                 if ok:
                     logger.info(f"Сделка #{deal_id} успешно переведена на этап Zakaz yaratildi")
+                    # Ставим тихую реакцию 👍 на сообщение в Telegram, подтверждая выполнение
+                    try:
+                        await message.react([ReactionTypeEmoji(emoji="👍")])
+                    except Exception:
+                        pass
                 else:
                     logger.warning(f"Ошибка обновления этапа для сделки #{deal_id}")
 
@@ -270,8 +286,18 @@ async def handle_group_message(message: Message):
                     await message.reply("⚠️ Ошибка при назначении доставщика в Битрикс24.")
                 return
 
-        # По поводу tayyor ничего не пишем в чат; оповещаем только если не удалось найти сделку для доставщика
-        if action_info["type"] != "ready":
+        # Если не удалось найти сделку:
+        if action_info["type"] == "ready":
+            try:
+                await message.react([ReactionTypeEmoji(emoji="🤷")])
+            except Exception:
+                pass
+            await message.reply(
+                "⚠️ Не удалось определить номер сделки в Битрикс24.\n"
+                "Пожалуйста, ответьте (reply) на сообщение с заказом (где есть хештег #... или телефон), либо напишите тег в сообщении, например: <code>tayyor #29x10x168</code>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
             if message.reply_to_message or len(text.strip().split()) <= 3:
                 await message.reply(
                     "⚠️ Не удалось найти сделку в Битрикс24 по этому заказу.\n"
