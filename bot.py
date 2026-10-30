@@ -67,7 +67,15 @@ def is_order_message(text: str) -> bool:
     return False
 
 
-RE_TAYYOR = re.compile(r"\b(tayyor|tayor|тай[её]р|тайор)\b", re.IGNORECASE)
+RE_TAYYOR = re.compile(
+    r"\b("
+    r"t(?:a|o|e)?(?:y|i|j){1,3}(?:o|e|a|u)?r\w*"
+    r"|т(?:а|о|е)?(?:й|и|ь){1,3}(?:о|е|ё|а|у)?р\w*"
+    r"|та[её]р\w*"
+    r"|готов\w*"
+    r")\b",
+    re.IGNORECASE
+)
 RE_PRINT = re.compile(r"\b(pechat|печать|print|chop|chop\s*etish)\b", re.IGNORECASE)
 
 COURIER_RULES = [
