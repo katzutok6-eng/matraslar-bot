@@ -70,22 +70,95 @@ def extract_label_items(text: str, default_size: Optional[str] = None) -> List[D
     return items
 
 
-def format_currency(val: Any) -> str:
-    """Форматирует сумму в красивый вид (например: 1 300 000 UZS или 330 $)."""
-    if val is None or val == "":
+def extract_balance_from_text(text: str) -> tuple[Optional[float], Optional[str]]:
+    """
+    Извлекает остаток к оплате (qogan summa) и валюту напрямую из текста заказа,
+    если они не переданы из Битрикс24.
+    """
+    if not text:
+        return None, None
+
+    # 1. Формула расчета: например, 430-100=330$ или 1200000-200000=1000000
+    math_match = re.search(r"\d[\d\s.,]*\s*-\s*\d[\d\s.,]*\s*=\s*(\d[\d\s.,]*)\s*([$A-Za-z]+)?", text)
+    if math_match:
+        bal_str = re.sub(r"[^\d.]", "", math_match.group(1))
+        curr_str = (math_match.group(2) or "").strip()
+        try:
+            bal = float(bal_str)
+            curr = "USD" if ("$" in curr_str or "$" in text) else "UZS"
+            return bal, curr
+        except ValueError:
+            pass
+
+    # 2. Ключевые слова: olasila, qoldiq, qoldi, ostatok, qogan summa
+    olasila_match = re.search(
+        r"(?:olasila|оласила|qoldiq|колдик|qoldi|колди|ostatok|остаток|qogan\s*summa|коган\s*сумма)\s*[:;=-]?\s*([\d\s.,]+)\s*([$A-Za-z]+)?",
+        text,
+        re.IGNORECASE
+    )
+    if olasila_match:
+        bal_str = re.sub(r"[^\d.]", "", olasila_match.group(1))
+        curr_str = (olasila_match.group(2) or "").strip()
+        try:
+            bal = float(bal_str)
+            curr = "USD" if ("$" in curr_str or "$" in text) else "UZS"
+            return bal, curr
+        except ValueError:
+            pass
+
+    return None, None
+
+
+def format_currency(val: Any, currency: Optional[str] = None, text: str = "") -> str:
+    """
+    Форматирует остаток к оплате (Qogan summasi):
+    - Если в тексте или сделке доллары ($ / USD) -> '330 $'
+    - Если сумы -> '1 300 000 UZS'
+    - Если val пустой или 0, пробуем надежно извлечь из text.
+    """
+    is_usd = False
+    if currency and currency.upper() in ["USD", "$"]:
+        is_usd = True
+    elif text and "$" in text:
+        is_usd = True
+
+    num = 0.0
+    has_num = False
+
+    if val is not None and str(val).strip() != "" and str(val).strip() != "—":
+        val_str = str(val).strip()
+        if "$" in val_str:
+            is_usd = True
+        try:
+            cleaned = re.sub(r"[^\d.]", "", val_str)
+            if cleaned:
+                num = float(cleaned)
+                has_num = True
+        except (ValueError, TypeError):
+            pass
+
+    # Если из val получили 0 или ничего, а в тексте есть расчет (например, 430-100=330$)
+    if (not has_num or num <= 0) and text:
+        text_bal, text_curr = extract_balance_from_text(text)
+        if text_bal is not None and text_bal > 0:
+            num = text_bal
+            has_num = True
+            if text_curr == "USD":
+                is_usd = True
+
+    if not has_num:
         return "—"
-    
-    val_str = str(val).strip()
-    if val_str.endswith("$"):
-        return val_str
-    
-    try:
-        num = float(val)
-        if num <= 0:
-            return "0 UZS"
+
+    if num <= 0:
+        return "0 $" if is_usd else "0 UZS"
+
+    if is_usd:
+        if num.is_integer():
+            return f"{num:,.0f} $".replace(",", " ")
+        else:
+            return f"{num:,.2f} $".replace(",", " ")
+    else:
         return f"{num:,.0f} UZS".replace(",", " ")
-    except (ValueError, TypeError):
-        return val_str if val_str else "—"
 
 
 def build_order_labels(
@@ -93,6 +166,7 @@ def build_order_labels(
     phones: str,
     address: str,
     balance_due: Any,
+    currency: Optional[str] = "UZS",
     text: str = "",
     default_size: Optional[str] = None
 ) -> List[Dict[str, Any]]:
@@ -100,14 +174,14 @@ def build_order_labels(
     Формирует список этикеток для заказа:
     1. Каждому товару отдельная этикетка с нумерацией (1/N, 2/N...).
     2. Позиция (Матрас М3 / Наматрасник чехол) четко указывается рядом с размером.
-    3. Поле Qogan summasi печатается ТОЛЬКО на 1-й этикетке, на остальных '—'.
+    3. Поле Qogan summasi печатается ТОЛЬКО на 1-й этикетке с точной валютой, на остальных '—'.
     """
     items = extract_label_items(text, default_size=default_size)
     total_stickers = sum(it["qty"] for it in items)
     labels = []
     current_index = 1
 
-    formatted_balance = format_currency(balance_due)
+    formatted_balance = format_currency(balance_due, currency=currency, text=text)
 
     for it in items:
         prod = it.get("product", "Matras")

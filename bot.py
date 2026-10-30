@@ -137,6 +137,7 @@ async def queue_deal_print_labels(deal_id: int, fallback_text: str = "") -> int:
 
         addr_val = deal_info.get("UF_CRM_DELIVERY_ADDR") if deal_info else ""
         balance_val = deal_info.get("UF_CRM_BALANCE") or deal_info.get("OPPORTUNITY") or 0
+        currency_val = deal_info.get("CURRENCY_ID") if deal_info else "UZS"
         def_size = deal_info.get("UF_CRM_MATTRESS_SIZE") if deal_info else None
 
         labels = build_order_labels(
@@ -144,6 +145,7 @@ async def queue_deal_print_labels(deal_id: int, fallback_text: str = "") -> int:
             phones=phones_val,
             address=addr_val,
             balance_due=balance_val,
+            currency=currency_val,
             text=order_text,
             default_size=def_size
         )
