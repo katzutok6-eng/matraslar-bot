@@ -6,6 +6,7 @@ echo    🖨 Запуск агента печати этикеток для Matr
 echo ======================================================
 echo.
 
+cd /d "%~dp0"
 python -m pip install pywin32 pillow --quiet
 
 python print_agent.py
