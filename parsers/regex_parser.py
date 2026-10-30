@@ -108,6 +108,9 @@ def parse_order_regex(text: str) -> OrderData:
         tot = normalize_amount(math_match.group(1))
         pre = normalize_amount(math_match.group(2))
         bal = normalize_amount(math_match.group(3))
+        curr_symbol = (math_match.group(4) or "").strip()
+        if "$" in curr_symbol or "$" in text:
+            order.currency = "USD"
         if tot > 0:
             order.total_amount = tot
         if pre > 0:
@@ -176,8 +179,12 @@ def parse_order_regex(text: str) -> OrderData:
     for line in lines:
         lower = line.lower()
         
-        # Стоп на финансовом блоке
-        if any(lower.startswith(k) for k in ["summa", "сумма", "narxi", "нархи", "narx", "нарх"]):
+        # Стоп на финансовом блоке или формуле расчета (например, 430-100=330$)
+        if (
+            any(lower.startswith(k) for k in ["summa", "сумма", "narxi", "нархи", "narx", "нарх", "olindi", "олинди", "olasila", "оласила"])
+            or re.search(r"\d+\s*-\s*\d+\s*=", line)
+            or line.strip().endswith("$")
+        ):
             break
         
         # Пропускаем хештеги

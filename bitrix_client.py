@@ -111,6 +111,7 @@ class Bitrix24Client:
             phones_list.append(f"{p} ({note})" if note else p)
         phones_str = ", ".join(phones_list) if phones_list else "не указан"
 
+        curr = getattr(order, "currency", "UZS") or "UZS"
         lines = [
             "Детали заказа из Telegram:\n",
             f"Теги: {' '.join(order.order_tags)}\n" if order.order_tags else "",
@@ -119,9 +120,9 @@ class Bitrix24Client:
             f"Телефоны: {phones_str}\n",
             f"Материал/чехол: {order.material}\n" if order.material else "",
             f"Наполнение/детали: {order.details}\n" if order.details else "",
-            f"Общая сумма: {order.total_amount:,.0f} UZS\n",
-            f"Предоплата: {order.prepayment_amount:,.0f} UZS ({order.prepayment_type or 'не указано'})\n",
-            f"Остаток к получению: {order.balance_due:,.0f} UZS\n",
+            f"Общая сумма: {order.total_amount:,.0f} {curr}\n",
+            f"Предоплата: {order.prepayment_amount:,.0f} {curr} ({order.prepayment_type or 'не указано'})\n",
+            f"Остаток к получению: {order.balance_due:,.0f} {curr}\n",
             f"Доставка в: {order.delivery_address}\n" if order.delivery_address else "",
             f"Дата доставки: {order.delivery_date}\n" if order.delivery_date else "",
             "\n--- Исходный текст сообщения ---\n",
@@ -137,10 +138,11 @@ class Bitrix24Client:
         if order.order_tags:
             deal_title += f" ({' '.join(order.order_tags)})"
 
+        curr = getattr(order, "currency", "UZS") or "UZS"
         fields: Dict[str, Any] = {
             "TITLE": deal_title,
             "OPPORTUNITY": order.total_amount,
-            "CURRENCY_ID": "UZS",
+            "CURRENCY_ID": curr,
             "SOURCE_ID": "TELEGRAM",
             "COMMENTS": self._format_deal_comments(order)
         }

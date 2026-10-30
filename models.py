@@ -41,6 +41,10 @@ class OrderData(BaseModel):
         default=0.0,
         description="Общая сумма заказа (Summa)"
     )
+    currency: str = Field(
+        default="UZS",
+        description="Валюта сделки (UZS или USD)"
+    )
     prepayment_amount: float = Field(
         default=0.0,
         description="Сумма предоплаты (Olindi)"
