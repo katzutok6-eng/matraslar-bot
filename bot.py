@@ -421,13 +421,13 @@ async def start_web_server():
 
 
 async def schedule_daily_stage_checker():
-    """Периодически проверяет даты заказов и переводит их в 'Zakaz tayyor bolish kuni' за 1 день до срока."""
+    """Периодически проверяет даты заказов на этапе 'Zakaz olindi' и переводит их в 'Zakaz tayyor bolish kuni' за 1 день до срока."""
     await asyncio.sleep(5)
     while True:
         try:
             logger.info("Проверка дат заказов для перевода в 'Zakaz tayyor bolish kuni'...")
             updated = await bitrix_client.move_upcoming_deals_to_ready_stage(
-                from_stages=[settings.DEFAULT_STAGE_ID, "UC_MG82DT"],
+                from_stages=[settings.DEFAULT_STAGE_ID],
                 to_stage=settings.READY_DATE_STAGE_ID,
                 days_before=1
             )

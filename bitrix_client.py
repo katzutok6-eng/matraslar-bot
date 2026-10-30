@@ -280,12 +280,13 @@ class Bitrix24Client:
         days_before: int = 1
     ) -> List[int]:
         """
-        Проверяет все открытые сделки на этапах from_stages (по умолчанию 'Zakaz olindi' и 'Zakaz yaratildi').
+        Проверяет все открытые сделки на этапах from_stages (по умолчанию только 'Zakaz olindi').
         Если дата готовности/доставки наступает через days_before дней или раньше (сегодня/завтра),
         переводит сделку на этап to_stage ('Zakaz tayyor bolish kuni').
+        Сделки на этапе 'Zakaz yaratildi' или 'Dostavka' никогда не откатываются назад!
         """
         if from_stages is None:
-            from_stages = ["UC_5Z222Q", "UC_MG82DT"]
+            from_stages = ["UC_5Z222Q"]
 
         from datetime import datetime, timezone, timedelta
         tashkent_tz = timezone(timedelta(hours=5))
