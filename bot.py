@@ -316,8 +316,8 @@ async def handle_group_message(message: Message):
             except Exception as e:
                 logger.warning(f"Не удалось связать контакт: {e}")
 
-        # 3. Умное создание или обновление существующей сделки
-        initial_stage = settings.READY_DATE_STAGE_ID if order.delivery_date else settings.DEFAULT_STAGE_ID
+        # 3. Умное создание или обновление существующей сделки (всегда на этап "Zakaz olindi")
+        initial_stage = settings.DEFAULT_STAGE_ID
         deal_id, is_updated = await bitrix_client.create_or_update_deal(
             order,
             contact_id=contact_id,
