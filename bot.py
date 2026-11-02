@@ -387,12 +387,29 @@ async def start_web_server():
         async def ping(request):
             return web.Response(text="Bot is running OK", status=200)
 
+        last_client_poll = {"time": None, "ip": None, "user_agent": None}
+
         async def get_print_queue(request):
+            nonlocal last_client_poll
             token = request.query.get("token")
             if token != settings.PRINT_SECRET_TOKEN:
                 return web.json_response({"error": "Unauthorized"}, status=401)
+            import datetime
+            last_client_poll = {
+                "timestamp": time.time(),
+                "time_str": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ip": request.remote,
+                "user_agent": request.headers.get("User-Agent", "Unknown")
+            }
             jobs = get_pending_print_jobs()
             return web.json_response({"status": "ok", "jobs": jobs})
+
+        async def get_print_status(request):
+            return web.json_response({
+                "status": "ok",
+                "last_poll": last_client_poll,
+                "pending_jobs_count": len(get_pending_print_jobs())
+            })
 
         async def ack_print_job(request):
             token = request.query.get("token")
@@ -411,6 +428,7 @@ async def start_web_server():
         app.router.add_get("/", ping)
         app.router.add_get("/health", ping)
         app.router.add_get("/api/print-queue", get_print_queue)
+        app.router.add_get("/api/print-status", get_print_status)
         app.router.add_post("/api/print-ack", ack_print_job)
 
         runner = web.AppRunner(app)
