@@ -434,11 +434,26 @@ async def start_web_server():
                 return web.json_response({"error": str(e)}, status=400)
             return web.json_response({"error": "Missing job_id"}, status=400)
 
+        async def enqueue_print_job_api(request):
+            token = request.query.get("token")
+            if token != settings.PRINT_SECRET_TOKEN:
+                return web.json_response({"error": "Unauthorized"}, status=401)
+            try:
+                data = await request.json()
+                d_id = data.get("deal_id")
+                if d_id:
+                    j_id = await queue_deal_print_labels(int(d_id))
+                    return web.json_response({"status": "ok", "job_id": j_id, "deal_id": d_id})
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=400)
+            return web.json_response({"error": "Missing deal_id"}, status=400)
+
         app.router.add_get("/", ping)
         app.router.add_get("/health", ping)
         app.router.add_get("/api/print-queue", get_print_queue)
         app.router.add_get("/api/print-status", get_print_status)
         app.router.add_post("/api/print-ack", ack_print_job)
+        app.router.add_post("/api/print-enqueue", enqueue_print_job_api)
 
         runner = web.AppRunner(app)
         await runner.setup()
