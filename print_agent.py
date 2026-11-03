@@ -29,17 +29,23 @@ SERVER_URL = "https://matraslar-bot.onrender.com"
 POLL_INTERVAL_SEC = 2.5
 SECRET_TOKEN = "matraslar_print_secret_2026"
 
-# Попытка импорта Windows-печати (win32print, win32ui)
+# Попытка импорта Windows-печати (win32print)
 try:
     import win32print
+    HAS_WIN32 = True
+except ImportError:
+    HAS_WIN32 = False
+    logger.warning("Модуль pywin32 не установлен. Будет использован эмулятор/прямой вывод.")
+
+# Попытка импорта графической GDI печати (опционально)
+try:
     import win32ui
     import win32con
     from PIL import Image, ImageDraw, ImageFont, ImageWin
     from label_image_builder import create_label_image
-    HAS_WIN32 = True
+    HAS_GDI = True
 except ImportError:
-    HAS_WIN32 = False
-    logger.warning("Модуль pywin32 или Pillow не установлен. Будет использован эмулятор/прямой вывод.")
+    HAS_GDI = False
 
 
 def find_ipos_printer():
@@ -222,30 +228,32 @@ def print_label_raw(printer_name: str, label: dict) -> bool:
     except Exception as e:
         logger.warning(f"Ошибка прямого вывода TSPL ({e}), пробуем через Windows GDI драйвер...")
 
-    # 2. Запасной вариант через GDI
-    try:
-        img = create_label_image(label)
-        hDC = win32ui.CreateDC()
-        hDC.CreatePrinterDC(printer_name)
+    # 2. Запасной вариант через GDI (если доступен)
+    if HAS_GDI:
         try:
-            w = hDC.GetDeviceCaps(win32con.HORZRES)
-            h = hDC.GetDeviceCaps(win32con.VERTRES)
-            hDC.StartDoc("Matraslar GDI Label")
-            hDC.StartPage()
+            img = create_label_image(label)
+            hDC = win32ui.CreateDC()
+            hDC.CreatePrinterDC(printer_name)
+            try:
+                w = hDC.GetDeviceCaps(win32con.HORZRES)
+                h = hDC.GetDeviceCaps(win32con.VERTRES)
+                hDC.StartDoc("Matraslar GDI Label")
+                hDC.StartPage()
 
-            dib = ImageWin.Dib(img)
-            dib.draw(hDC.GetHandleOutput(), (0, 0, w, h))
+                dib = ImageWin.Dib(img)
+                dib.draw(hDC.GetHandleOutput(), (0, 0, w, h))
 
-            hDC.EndPage()
-            hDC.EndDoc()
-        finally:
-            hDC.DeleteDC()
+                hDC.EndPage()
+                hDC.EndDoc()
+            finally:
+                hDC.DeleteDC()
 
-        logger.info(f"✅ Напечатана 1 наклейка (GDI): {label.get('size')}")
-        return True
-    except Exception as e2:
-        logger.error(f"❌ Ошибка печати: {e2}")
-        return False
+            logger.info(f"✅ Напечатана 1 наклейка (GDI): {label.get('size')}")
+            return True
+        except Exception as e2:
+            logger.error(f"❌ Ошибка печати: {e2}")
+            return False
+    return False
 
 
 def fetch_pending_jobs():

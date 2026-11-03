@@ -1,8 +1,10 @@
 import asyncio
+import datetime
 import logging
 import os
 import re
 import sys
+import time
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -394,14 +396,21 @@ async def start_web_server():
             token = request.query.get("token")
             if token != settings.PRINT_SECRET_TOKEN:
                 return web.json_response({"error": "Unauthorized"}, status=401)
-            import datetime
-            last_client_poll = {
-                "timestamp": time.time(),
-                "time_str": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "ip": request.remote,
-                "user_agent": request.headers.get("User-Agent", "Unknown")
-            }
-            jobs = get_pending_print_jobs()
+            try:
+                last_client_poll = {
+                    "timestamp": time.time(),
+                    "time_str": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "ip": request.remote,
+                    "user_agent": request.headers.get("User-Agent", "Unknown")
+                }
+            except Exception as e:
+                logger.warning(f"Ошибка сохранения статуса опроса: {e}")
+
+            try:
+                jobs = get_pending_print_jobs()
+            except Exception as e:
+                logger.error(f"Ошибка получения заданий печати: {e}")
+                jobs = []
             return web.json_response({"status": "ok", "jobs": jobs})
 
         async def get_print_status(request):
