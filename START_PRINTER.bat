@@ -1,14 +1,13 @@
 @echo off
-chcp 65001 > nul
 title Matraslar - Print Agent (iPOS MA-0780B)
+cd /d "%~dp0"
+
 echo ======================================================
-echo    🖨 Запуск агента печати этикеток для Matraslar
+echo    Matraslar - Print Agent (iPOS MA-0780B)
 echo ======================================================
 echo.
 
-cd /d "%~dp0"
-
-:: Поиск установленного Python
+echo [*] Searching for Python...
 set "PY_CMD="
 
 where python >nul 2>&1
@@ -31,20 +30,21 @@ if %ERRORLEVEL% equ 0 (
 )
 
 if not defined PY_CMD (
-    echo [!] ОШИБКА: Python не найден на этом компьютере.
-    echo Пожалуйста, установите Python с сайта https://www.python.org
+    echo [ERROR] Python not found on this computer.
+    echo Please install Python from https://www.python.org
+    echo Make sure to check "Add Python to PATH" during installation.
     echo.
     pause
     exit /b 1
 )
 
-echo [+] Используется Python: %PY_CMD%
-echo [*] Проверка библиотек (pywin32, pillow)...
-%PY_CMD% -m pip install pywin32 pillow --quiet
+echo [+] Using Python: %PY_CMD%
+echo [*] Checking required libraries (pywin32)...
+"%PY_CMD%" -m pip install pywin32 --quiet
 
-echo [*] Запуск агента печати...
-%PY_CMD% print_agent.py
+echo [*] Starting Print Agent...
+"%PY_CMD%" print_agent.py
 
 echo.
-echo Агент печати остановлен.
+echo Print Agent stopped.
 pause

@@ -20,6 +20,7 @@ from aiogram.client.default import DefaultBotProperties
 from config import settings
 from bitrix_client import Bitrix24Client
 from parsers.service import parse_order
+from parsers.regex_parser import extract_uz_phones, extract_address
 from cache_manager import save_message_deal, get_deal_by_message, add_print_job, get_pending_print_jobs, mark_print_job_done
 from label_generator import build_order_labels
 
@@ -116,15 +117,20 @@ async def queue_deal_print_labels(deal_id: int, fallback_text: str = "") -> int:
         if not order_text and deal_info:
             order_text = deal_info.get("COMMENTS") or ""
 
+        # Если текст взят из комментария Битрикс, берем чистый исходный текст
+        clean_text = order_text
+        if "--- Исходный текст сообщения ---" in clean_text:
+            clean_text = clean_text.split("--- Исходный текст сообщения ---")[-1].strip()
+
         # Код заказа (#19x10x108 #radal7)
         code_val = deal_info.get("UF_CRM_TAGS") if deal_info else ""
-        if not code_val and order_text:
-            tags = re.findall(r"#[A-Za-z0-9_x-]+", order_text)
+        if not code_val and clean_text:
+            tags = re.findall(r"#[A-Za-z0-9_x-]+", clean_text)
             code_val = " ".join(tags)
         if not code_val and deal_info:
             code_val = deal_info.get("TITLE") or f"Сделка #{deal_id}"
 
-        # Телефоны
+        # Телефоны (строго через extract_uz_phones, исключая 1200000-20 и даты)
         phones_val = ""
         if deal_info and deal_info.get("CONTACT_ID"):
             try:
@@ -133,11 +139,15 @@ async def queue_deal_print_labels(deal_id: int, fallback_text: str = "") -> int:
                 phones_val = ", ".join(p.get("VALUE") for p in c_phones if p.get("VALUE"))
             except Exception:
                 pass
-        if not phones_val and order_text:
-            p_list = re.findall(r"(?:\+?998)?[\s-]?\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}", order_text)
-            phones_val = ", ".join(set(p_list))
+        if not phones_val and clean_text:
+            extracted_p = extract_uz_phones(clean_text)
+            if extracted_p:
+                phones_val = ", ".join(f"{p[1]} ({p[2]})" if p[2] else p[1] for p in extracted_p)
 
         addr_val = deal_info.get("UF_CRM_DELIVERY_ADDR") if deal_info else ""
+        if not addr_val and clean_text:
+            addr_val = extract_address(clean_text)
+
         balance_val = deal_info.get("UF_CRM_BALANCE") or deal_info.get("OPPORTUNITY") or 0
         currency_val = deal_info.get("CURRENCY_ID") if deal_info else "UZS"
         def_size = deal_info.get("UF_CRM_MATTRESS_SIZE") if deal_info else None
@@ -145,10 +155,10 @@ async def queue_deal_print_labels(deal_id: int, fallback_text: str = "") -> int:
         labels = build_order_labels(
             code=code_val,
             phones=phones_val,
-            address=addr_val,
+            address=addr_val or "",
             balance_due=balance_val,
             currency=currency_val,
-            text=order_text,
+            text=clean_text,
             default_size=def_size
         )
 

@@ -73,56 +73,71 @@ def find_ipos_printer():
 
 
 def generate_tspl_bytes(label: dict) -> bytes:
-    code = str(label.get("code", "—"))
-    product = str(label.get("product", "")).strip() or "Matras"
-    size = str(label.get("size", "—"))
-    phone = str(label.get("phone", "—"))
-    address = str(label.get("address", "—"))
-    balance = str(label.get("balance_due", "—"))
+    def sanitize(s: Any) -> str:
+        val = str(s if s is not None else "").strip()
+        # Заменяем переносы строк на пробелы и кавычки на апострофы для TSPL
+        val = val.replace("\r", " ").replace("\n", " ").replace('"', "'")
+        # Заменяем unicode длинное тире на стандартный ASCII минус, чтобы не ломать прошивку принтера
+        val = val.replace("—", "-").replace("–", "-")
+        return re.sub(r"\s+", " ", val).strip()
 
-    # Разделение телефона и имени (чтобы скобки не вылезали за рамку)
-    phone_clean = phone.strip()
-    m_phone = re.match(r"(.*?)\s*\((.*?)\)$", phone_clean)
-    if m_phone:
-        p_num = m_phone.group(1).strip()
-        p_name = f"({m_phone.group(2).strip()})"
+    code = sanitize(label.get("code", "-")) or "-"
+    product = sanitize(label.get("product", "")) or "Matras"
+    size = sanitize(label.get("size", "-")) or "-"
+    phone = sanitize(label.get("phone", "-")) or "-"
+    address = sanitize(label.get("address", ""))
+    balance = sanitize(label.get("balance_due", "-")) or "-"
+
+    # Разделение телефона и имени/второго номера
+    p_num = ""
+    p_name = ""
+    if "," in phone:
+        parts = [p.strip() for p in phone.split(",") if p.strip()]
+        p_num = parts[0]
+        p_name = parts[1] if len(parts) > 1 else ""
+    elif "(" in phone and ")" in phone:
+        m_phone = re.match(r"(.*?)\s*\((.*?)\)$", phone)
+        if m_phone:
+            p_num = m_phone.group(1).strip()
+            p_name = f"({m_phone.group(2).strip()})"
     else:
-        m_p2 = re.match(r"([\+\d\s\-]+)\s+([A-Za-zА-Яа-яЁёЎўҚқҒғҲҳ].*)", phone_clean)
+        m_p2 = re.match(r"([\+\d\s\-]+)\s+([A-Za-zА-Яа-яЁёЎўҚқҒғҲҳ].*)", phone)
         if m_p2:
             p_num = m_p2.group(1).strip()
             p_name = f"({m_p2.group(2).strip()})"
-        elif len(phone_clean) > 22:
-            idx = phone_clean[:22].rfind(" ")
-            p_num = phone_clean[:idx].strip() if idx > 7 else phone_clean[:22]
-            p_name = phone_clean[len(p_num):].strip()
+        elif len(phone) > 22:
+            idx = phone[:22].rfind(" ")
+            p_num = phone[:idx].strip() if idx > 7 else phone[:22]
+            p_name = phone[len(p_num):].strip()
         else:
-            p_num = phone_clean
+            p_num = phone
             p_name = ""
 
     # Автоперенос адреса
-    words = address.split()
-    addr_lines = []
-    curr_line = ""
-    for w in words:
-        if not curr_line:
-            curr_line = w
-        elif len(curr_line) + 1 + len(w) <= 25:
-            curr_line += " " + w
-        else:
+    if not address or address in ["-", "None", "null"]:
+        addr_lines = []
+    else:
+        words = address.split()
+        addr_lines = []
+        curr_line = ""
+        for w in words:
+            if not curr_line:
+                curr_line = w
+            elif len(curr_line) + 1 + len(w) <= 25:
+                curr_line += " " + w
+            else:
+                addr_lines.append(curr_line)
+                curr_line = w
+        if curr_line:
             addr_lines.append(curr_line)
-            curr_line = w
-    if curr_line:
-        addr_lines.append(curr_line)
-    if not addr_lines:
-        addr_lines = ["—"]
 
     # Сумма и валюта
-    m_sum = re.match(r"^([\d\s\.,]+)\s*([A-Za-zА-Яа-яЁё\$]+)?$", balance.strip())
+    m_sum = re.match(r"^([\d\s\.,]+)\s*([A-Za-zА-Яа-яЁё\$]+)?$", balance)
     if m_sum and len(m_sum.group(1).strip()) <= 10:
         b_amt = m_sum.group(1).strip()
         b_curr = m_sum.group(2) or ""
     else:
-        b_amt = balance.strip()
+        b_amt = balance
         b_curr = ""
 
     tspl = [
@@ -163,7 +178,9 @@ def generate_tspl_bytes(label: dict) -> bytes:
         'TEXT 25,405,"3",0,1,1,"ADRES:"',
     ])
 
-    if len(addr_lines) == 1:
+    if not addr_lines:
+        tspl.append('TEXT 25,438,"3",0,1,1,"-"')
+    elif len(addr_lines) == 1:
         tspl.append(f'TEXT 25,438,"3",0,1,1,"{addr_lines[0][:26]}"')
     elif len(addr_lines) == 2:
         tspl.append(f'TEXT 25,435,"3",0,1,1,"{addr_lines[0][:26]}"')
@@ -179,8 +196,10 @@ def generate_tspl_bytes(label: dict) -> bytes:
         'TEXT 25,532,"3",0,1,1,"QOGAN SUMMASI:"',
     ])
 
-    if balance.strip().endswith("$"):
-        val = balance.strip()[:-1].strip()
+    if balance in ["", "-", "None", "null"]:
+        tspl.append('TEXT 25,572,"3",0,2,2,"-"')
+    elif balance.endswith("$"):
+        val = balance[:-1].strip()
         tspl.append(f'TEXT 25,572,"3",0,2,2,"{val}"')
         curr_x = 25 + len(val) * 32 + 10
         tspl.append(f'TEXT {curr_x},585,"3",0,1,2,"$"')

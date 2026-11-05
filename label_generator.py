@@ -4,22 +4,13 @@ from typing import List, Dict, Any, Optional
 def extract_label_items(text: str, default_size: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Извлекает список позиций с указанием товара (Матрас / Наматрасник и т.д.) и размера.
-    Пример:
-    M3
-    197/187 1ta
-    78/178 2ta
-    Namatrasnik chixol
-    198/187 1ta
-    78/178 2ta
-    -> [
-        {'product': 'Matras M3', 'size': '197/187', 'qty': 1},
-        {'product': 'Matras M3', 'size': '78/178', 'qty': 2},
-        {'product': 'Namatrasnik chixol', 'size': '198/187', 'qty': 1},
-        {'product': 'Namatrasnik chixol', 'size': '78/178', 'qty': 2}
-    ]
     """
     if not text:
         return [{"product": "Matras", "size": default_size or "Standart", "qty": 1}]
+
+    # Если текст взят из COMMENTS сделки Битрикс, берем только исходную часть
+    if "--- Исходный текст сообщения ---" in text:
+        text = text.split("--- Исходный текст сообщения ---")[-1].strip()
 
     size_pattern = re.compile(
         r"(\b\d{2,3}\s*[/x*хXХ]\s*\d{2,3}\b)(?:[-–—\s(]*([0-9]+)\s*(?:ta|dona|шт|d)\)?)?",
@@ -72,13 +63,25 @@ def extract_label_items(text: str, default_size: Optional[str] = None) -> List[D
 
 def extract_balance_from_text(text: str) -> tuple[Optional[float], Optional[str]]:
     """
-    Извлекает остаток к оплате (qogan summa) и валюту напрямую из текста заказа,
-    если они не переданы из Битрикс24.
+    Извлекает остаток к оплате (qogan summa) и валюту напрямую из текста заказа.
     """
     if not text:
         return None, None
 
-    # 1. Формула расчета: например, 430-100=330$ или 1200000-200000=1000000
+    # Если передан весь комментарий сделки, смотрим исходный текст
+    if "--- Исходный текст сообщения ---" in text:
+        text = text.split("--- Исходный текст сообщения ---")[-1].strip()
+
+    # 1. Одиночная сумма в долларах: например 208$
+    usd_match = re.search(r"(?:^|\s)(\d[\d\s.,]*)\s*\$", text)
+    if usd_match:
+        try:
+            val = float(re.sub(r"[^\d.]", "", usd_match.group(1)))
+            return val, "USD"
+        except ValueError:
+            pass
+
+    # 2. Формула с равенством: например 430-100=330$
     math_match = re.search(r"\d[\d\s.,]*\s*-\s*\d[\d\s.,]*\s*=\s*(\d[\d\s.,]*)\s*([$A-Za-z]+)?", text)
     if math_match:
         bal_str = re.sub(r"[^\d.]", "", math_match.group(1))
@@ -90,9 +93,31 @@ def extract_balance_from_text(text: str) -> tuple[Optional[float], Optional[str]
         except ValueError:
             pass
 
-    # 2. Ключевые слова: olasila, qoldiq, qoldi, ostatok, qogan summa
+    # 3. Формула после Suma / Summa: Suma 1200000-200000
+    suma_math = re.search(r"(?:summa|suma|сумма|сума)\s*[:;=-]?[ \t]*(\d[\d\s.,]*)\s*-\s*(\d[\d\s.,]*)", text, re.IGNORECASE)
+    if suma_math:
+        try:
+            tot = float(re.sub(r"[^\d.]", "", suma_math.group(1)))
+            pre = float(re.sub(r"[^\d.]", "", suma_math.group(2)))
+            if tot > 0 and pre > 0:
+                curr = "USD" if "$" in text else "UZS"
+                return max(0.0, tot - pre), curr
+        except ValueError:
+            pass
+
+    # 4. Сумма перед olasila: например 1000000 som olasila
+    olasila_before = re.search(r"(\d[\d\s.,]*)\s*(?:som|сум|so'm)?\s*(?:olasila|оласила)", text, re.IGNORECASE)
+    if olasila_before:
+        try:
+            bal = float(re.sub(r"[^\d.]", "", olasila_before.group(1)))
+            curr = "USD" if "$" in text else "UZS"
+            return bal, curr
+        except ValueError:
+            pass
+
+    # 5. Сумма строго после olasila на одной строке ([ \t]): olasila 1000000 som
     olasila_match = re.search(
-        r"(?:olasila|оласила|qoldiq|колдик|qoldi|колди|ostatok|остаток|qogan\s*summa|коган\s*сумма)\s*[:;=-]?\s*([\d\s.,]+)\s*([$A-Za-z]+)?",
+        r"(?:olasila|оласила|qoldiq|колдик|qoldi|колди|ostatok|остаток)\s*[:;=-]?[ \t]+([\d\s.,]+)\s*([$A-Za-z]+)?",
         text,
         re.IGNORECASE
     )
@@ -125,19 +150,19 @@ def format_currency(val: Any, currency: Optional[str] = None, text: str = "") ->
     num = 0.0
     has_num = False
 
-    if val is not None and str(val).strip() != "" and str(val).strip() != "—":
+    if val is not None and str(val).strip() not in ["", "-", "—", "None", "null"]:
         val_str = str(val).strip()
         if "$" in val_str:
             is_usd = True
         try:
             cleaned = re.sub(r"[^\d.]", "", val_str)
-            if cleaned:
+            if cleaned and cleaned != "4112026":  # исключаем дату 04.11.2026 если попала в баланс
                 num = float(cleaned)
                 has_num = True
         except (ValueError, TypeError):
             pass
 
-    # Если из val получили 0 или ничего, а в тексте есть расчет (например, 430-100=330$)
+    # Если из val получили 0 или ничего, или ошибочную дату, извлекаем из текста
     if (not has_num or num <= 0) and text:
         text_bal, text_curr = extract_balance_from_text(text)
         if text_bal is not None and text_bal > 0:
@@ -147,7 +172,7 @@ def format_currency(val: Any, currency: Optional[str] = None, text: str = "") ->
                 is_usd = True
 
     if not has_num:
-        return "—"
+        return "-"
 
     if num <= 0:
         return "0 $" if is_usd else "0 UZS"
@@ -174,7 +199,7 @@ def build_order_labels(
     Формирует список этикеток для заказа:
     1. Каждому товару отдельная этикетка с нумерацией (1/N, 2/N...).
     2. Позиция (Матрас М3 / Наматрасник чехол) четко указывается рядом с размером.
-    3. Поле Qogan summasi печатается ТОЛЬКО на 1-й этикетке с точной валютой, на остальных '—'.
+    3. Поле Qogan summasi печатается ТОЛЬКО на 1-й этикетке с точной валютой, на остальных '-'.
     """
     items = extract_label_items(text, default_size=default_size)
     total_stickers = sum(it["qty"] for it in items)
@@ -183,24 +208,34 @@ def build_order_labels(
 
     formatted_balance = format_currency(balance_due, currency=currency, text=text)
 
+    # Очистка адреса и телефонов
+    clean_addr = (address or "").strip()
+    if clean_addr in ["-", "—", "None", "null"]:
+        clean_addr = ""
+
+    clean_phone = (phones or "").strip()
+    if clean_phone in ["-", "—", "None", "null"]:
+        clean_phone = "-"
+
+    clean_code = (code or "").strip()
+    if not clean_code or clean_code in ["-", "—"]:
+        clean_code = "-"
+
     for it in items:
         prod = it.get("product", "Matras")
         sz = it["size"]
         for _ in range(it["qty"]):
-            # Нумерация размера (1/3, 2/3...) если больше 1 товара
             size_display = f"{sz} ({current_index}/{total_stickers})" if total_stickers > 1 else sz
-            
-            # Сумма только на 1-й наклейке
-            balance_display = formatted_balance if current_index == 1 else "—"
+            balance_display = formatted_balance if current_index == 1 else "-"
 
             labels.append({
                 "index": current_index,
                 "total": total_stickers,
-                "code": code or "—",
+                "code": clean_code,
                 "product": prod,
                 "size": size_display,
-                "phone": phones or "—",
-                "address": address or "—",
+                "phone": clean_phone,
+                "address": clean_addr,
                 "balance_due": balance_display
             })
             current_index += 1

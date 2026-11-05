@@ -17,6 +17,10 @@ class OrderData(BaseModel):
         default_factory=dict,
         description="Пометки к номерам (например: {'+998881978909': 'Maniki', '+998974493645': 'Erimliki'})"
     )
+    customer_name: Optional[str] = Field(
+        default=None,
+        description="Имя клиента/заказчика (например: 'Элла')"
+    )
     product_name: str = Field(
         default="Матрас",
         description="Название модели или изделия (например: 'Toper 10 sm', 'Mayami kaprz')"

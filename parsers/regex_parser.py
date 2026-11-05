@@ -1,6 +1,8 @@
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict
 from models import OrderData
+
+UZ_OPERATORS = r"(?:33|50|55|71|77|88|90|91|93|94|95|97|98|99)"
 
 
 def normalize_amount(val_str: str) -> float:
@@ -24,6 +26,126 @@ def normalize_phone(phone_str: str) -> str:
     return phone_str.strip()
 
 
+def extract_uz_phones(text: str) -> List[Tuple[str, str, str]]:
+    """
+    Извлекает телефоны Узбекистана и возможные примечания/имена.
+    Возвращает список кортежей: (чистый_номер_+998, форматированный_номер, пометка_или_имя).
+    Строго требует валидный код оператора (33, 50, 55, 71, 77, 88, 90, 91, 93, 94, 95, 97, 98, 99).
+    Исключает математические формулы и даты.
+    """
+    results = []
+    lines = text.splitlines()
+
+    pattern = re.compile(
+        rf"(?:(?:\+?998)[ \t-]*)?({UZ_OPERATORS})[ \t-]*(\d{{3}})[ \t-]*(\d{{2}})[ \t-]*(\d{{2}})\b|"
+        rf"(?:(?:\+?998)[ \t-]*)?({UZ_OPERATORS})[ \t-]*(\d{{7}})\b",
+        re.IGNORECASE
+    )
+
+    for line in lines:
+        line_clean = line.strip()
+        if not line_clean or line_clean.startswith("#"):
+            continue
+
+        lower = line_clean.lower()
+        # Исключаем явные финансовые строки
+        if any(w in lower for w in ["suma", "summa", "сумма", "сума", "olasila", "оласила", "olindi", "олинди", "$"]):
+            if re.search(r"\d+\s*[-+]\s*\d+", line_clean) or "=" in line_clean:
+                continue
+
+        # Исключаем строки дат (например: 04.11.2026)
+        if re.search(r"^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$", line_clean):
+            continue
+
+        for m in pattern.finditer(line_clean):
+            if m.group(1):
+                op, p1, p2, p3 = m.group(1), m.group(2), m.group(3), m.group(4)
+                full_num = f"+998{op}{p1}{p2}{p3}"
+                formatted = f"+998 {op} {p1} {p2} {p3}"
+            else:
+                op, rest = m.group(5), m.group(6)
+                full_num = f"+998{op}{rest}"
+                formatted = f"+998 {op} {rest[:3]} {rest[3:5]} {rest[5:7]}"
+
+            # Ищем имя/пометку в этой же строке
+            note = line_clean[:m.start()] + " " + line_clean[m.end():]
+            note = re.sub(r"[+:\-,()]+", " ", note).strip()
+            # Фильтруем чистые цифры и слишком короткие слова
+            clean_words = [w for w in note.split() if not w.isdigit() and len(w) > 1 and not w.startswith("#")]
+            note_str = " ".join(clean_words)
+
+            if full_num not in [r[0] for r in results]:
+                results.append((full_num, formatted, note_str))
+
+    return results
+
+
+def extract_address(text: str, delivery_date: str = "") -> str:
+    """
+    Извлекает адрес доставки из текста заказа.
+    Поддерживает ключевые слова, районы и эвристику.
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    # 1. Явный префикс адреса (Адрес: ..., Adres: ..., Dostavka: ...)
+    for line in lines:
+        m = re.match(r"^(?:адрес|adres|dostavka|доставка)\s*[:;=-]?\s*(.+)", line, re.IGNORECASE)
+        if m:
+            clean = m.group(1).strip()
+            if len(clean) > 3:
+                return clean
+
+    # 2. Ключевые слова адреса / районов Ташкента и городов
+    addr_keywords = [
+        "ko'cha", "kucha", "куча", "ул.", "улица", "дом", "dom", "kvartira", "квартира",
+        "etaj", "этаж", "massiv", "массив", "kvartal", "квартал", "mavze", "мавзе",
+        "tuman", "туман", "rayon", "район", "shahar", "шахар", "город", "padez", "подъезд",
+        "tower", "mo'ljal", "ориентир", "chapanata", "чапаната",
+        "sergeli", "сергели", "yunusobod", "юнусобод", "chilonzor", "чилонзор",
+        "yakkasaroy", "яккасарой", "mirobod", "миробод", "shayxontoxur", "шайхонтохур",
+        "olmazor", "олмазор", "uchtepa", "учтепа", "yashnobod", "яшнобод", "bektemir", "бектемир",
+        "samarqand", "самарканд", "buxoro", "бухара", "andijon", "андижан", "fargona", "фергана",
+        "namangan", "наманган", "navoiy", "навои", "jizzax", "джизак"
+    ]
+
+    ignore_for_address = [
+        "summa", "сумма", "suma", "сума", "olindi", "олинди", "olasila", "оласила",
+        "narxi", "нархи", "narx", "нарх", "karta", "карта", "som", "сом", "$",
+        "purjina", "пружина", "paralon", "паралон", "поролон", "plotns", "плотност",
+        "kakos", "какос", "кокос", "qora", "кора", "tomoni", "томони", "qavat", "кават",
+        "xb", "хб", "barxt", "бархат", "seriy", "серый", "palasa", "полоса", "admanka",
+        "zet", "зет", "zich", "зич", "bort", "борт", "namatrasnik", "наматрасник", "chixol", "чехол",
+        "garantya", "гарантия", "talon", "талон", "upakofka", "упаковка"
+    ]
+
+    for line in lines:
+        lower = line.lower()
+        if any(k in lower for k in addr_keywords):
+            if not any(k in lower for k in ignore_for_address) and not re.search(r"\d+\s*[-+]\s*\d+", line):
+                clean_addr = re.sub(r"^(?:адрес|adres|dostavka|доставка)\s*[:;=-]?\s*", "", line, flags=re.IGNORECASE).strip()
+                if len(clean_addr) > 3:
+                    return clean_addr
+
+    # 3. Эвристика: строка перед датой доставки
+    for i, line in enumerate(lines):
+        if delivery_date and re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", line):
+            if i > 0:
+                candidate = lines[i-1].strip()
+                cand_lower = candidate.lower()
+                if (
+                    not any(k in cand_lower for k in ignore_for_address)
+                    and "=" not in candidate
+                    and "$" not in candidate
+                    and not re.search(r"^\d+\s*[-+]\s*\d+", candidate)
+                    and not re.search(r"\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b", candidate)
+                ):
+                    addr_candidate = re.sub(r"(?i)(ga|ka|ge|ke|га|ка|ге|ке)$", "", candidate).strip()
+                    if len(addr_candidate) > 3:
+                        return addr_candidate
+
+    return ""
+
+
 def parse_order_regex(text: str) -> OrderData:
     """
     Эвристический / RegEx парсер для заказов матрасов из Telegram.
@@ -36,41 +158,61 @@ def parse_order_regex(text: str) -> OrderData:
     tags = re.findall(r"#[A-Za-z0-9_x-]+", text)
     order.order_tags = tags
 
-    # 2. Извлечение номеров телефонов и пометок (например: 881978909 Maniki)
-    # Узбекские 9-значные (например: 998680205, 881978909, 974493645) или с кодом +998
-    phone_matches = re.finditer(r"(?:(?:\+?998)|(?:\b))([0-9]{2}[0-9]{7})\b([^\n]*)", text)
-    extracted_phones = []
-    phone_notes = {}
-    for m in phone_matches:
-        raw_p = m.group(1)
-        normalized = normalize_phone(raw_p)
-        note = m.group(2).strip()
-        # Чистим пометку от знаков препинания и дефисов
-        clean_note = re.sub(r"^[-–—:;,()\s]+|[-–—:;,()\s]+$", "", note).strip()
-        
-        if normalized not in extracted_phones:
-            extracted_phones.append(normalized)
-            if clean_note:
-                phone_notes[normalized] = clean_note
+    # 2. Извлечение номеров телефонов и пометок
+    extracted_phones = extract_uz_phones(text)
+    order.phones = [p[0] for p in extracted_phones]
+    order.phone_notes = {p[0]: p[2] for p in extracted_phones if p[2]}
 
-    order.phones = extracted_phones
-    order.phone_notes = phone_notes
+    # 3. Финансовый блок: Summa, Olindi, Olasila, Формулы, Валюта
+    if "$" in text:
+        order.currency = "USD"
 
-    # 3. Финансовый блок: Summa, Olindi, Olasila
-    # Summa (Сумма)
-    summa_match = re.search(r"(?:summa|сумма|narxi|нархи|narx|нарх)\s*[:;=-]?\s*([\d\s.,]+)", text, re.IGNORECASE)
-    if summa_match:
-        order.total_amount = normalize_amount(summa_match.group(1))
+    # Формула с равенством: например 430-100=330$
+    math_with_eq = re.search(r"(\d[\d\s.,]*)\s*-\s*(\d[\d\s.,]*)\s*=\s*(\d[\d\s.,]*)\s*([$A-Za-z]+)?", text)
+    if math_with_eq:
+        tot = normalize_amount(math_with_eq.group(1))
+        pre = normalize_amount(math_with_eq.group(2))
+        bal = normalize_amount(math_with_eq.group(3))
+        curr_sym = (math_with_eq.group(4) or "").strip()
+        if "$" in curr_sym or "$" in text:
+            order.currency = "USD"
+        if tot > 0 and pre > 0:
+            order.total_amount = tot
+            order.prepayment_amount = pre
+            order.balance_due = max(0.0, bal)
+
+    # Формула после Suma / Summa: например Suma 1200000-200000 g karta
+    if order.total_amount == 0:
+        math_suma = re.search(r"(?:summa|suma|сумма|сума)\s*[:;=-]?[ \t]*(\d[\d\s.,]*)\s*-\s*(\d[\d\s.,]*)", text, re.IGNORECASE)
+        if math_suma:
+            tot = normalize_amount(math_suma.group(1))
+            pre = normalize_amount(math_suma.group(2))
+            if tot > 0 and pre > 0:
+                order.total_amount = tot
+                order.prepayment_amount = pre
+                order.balance_due = max(0.0, tot - pre)
+
+    # Одиночная сумма в долларах, например: 208$
+    usd_single = re.search(r"(?:^|\s)(\d[\d\s.,]*)\s*\$", text)
+    if usd_single and order.total_amount == 0:
+        order.total_amount = normalize_amount(usd_single.group(1))
+        order.balance_due = order.total_amount
+        order.currency = "USD"
+
+    # Summa (если не определена формулой)
+    if order.total_amount == 0:
+        summa_match = re.search(r"(?:summa|suma|сумма|сума|narxi|нархи|narx|нарх)\s*[:;=-]?[ \t]*(\d[\d\s.,]*)", text, re.IGNORECASE)
+        if summa_match:
+            order.total_amount = normalize_amount(summa_match.group(1))
 
     # Olindi (Предоплата / Оплачено)
-    olindi_match = re.search(r"(?:olindi|олинди|avans|аванс|oplata|оплата|tolandi|туланди)\s*[:;=-]?\s*(.+)", text, re.IGNORECASE)
+    olindi_match = re.search(r"(?:olindi|олинди|avans|аванс|oplata|оплата|tolandi|туланди)\s*[:;=-]?[ \t]*(.+)", text, re.IGNORECASE)
     has_full_prepayment = False
 
     if olindi_match:
-        olindi_val = olindi_match.group(1).strip()
+        olindi_val = olindi_match.group(1).splitlines()[0].strip()
         lower_olindi = olindi_val.lower()
 
-        # Способ оплаты
         if "qr" in lower_olindi:
             order.prepayment_type = "QR"
         elif any(k in lower_olindi for k in ["karta", "карта", "kart", "карт", "card"]):
@@ -82,41 +224,30 @@ def parse_order_regex(text: str) -> OrderData:
         elif "payme" in lower_olindi:
             order.prepayment_type = "Payme"
 
-        # Сумма оплаты
         if any(k in lower_olindi for k in ["hammasi", "хаммаси", "polnost", "полност", "barchasi", "барчаси", "to'liq", "тулик"]):
             order.prepayment_amount = order.total_amount
             order.balance_due = 0.0
             has_full_prepayment = True
         else:
-            amount_match = re.search(r"([\d\s.,]+)", olindi_val)
+            amount_match = re.search(r"(\d[\d\s.,]*)", olindi_val)
             if amount_match:
                 order.prepayment_amount = normalize_amount(amount_match.group(1))
 
-    # Olasila (Остаток к оплате / К доплате)
-    olasila_match = re.search(r"(?:olasila|оласила|qoldiq|колдик|qoldi|колди|ostatok|остаток)\s*[:;=-]?\s*([\d\s.,]+)", text, re.IGNORECASE)
-    if olasila_match:
-        order.balance_due = normalize_amount(olasila_match.group(1))
-    else:
-        if has_full_prepayment:
-            order.balance_due = 0.0
-        elif order.total_amount > 0:
-            order.balance_due = max(0.0, order.total_amount - order.prepayment_amount)
+    # Предоплата на карту из строки Suma 1200000-200000 g karta
+    if not order.prepayment_type and ("g karta" in text.lower() or "karta" in text.lower()):
+        order.prepayment_type = "Karta"
 
-    # Формула расчета: например, 430-100=330$
-    math_match = re.search(r"(\d[\d\s.,]*)\s*-\s*(\d[\d\s.,]*)\s*=\s*(\d[\d\s.,]*)\s*([$A-Za-z]+)?", text)
-    if math_match:
-        tot = normalize_amount(math_match.group(1))
-        pre = normalize_amount(math_match.group(2))
-        bal = normalize_amount(math_match.group(3))
-        curr_symbol = (math_match.group(4) or "").strip()
-        if "$" in curr_symbol or "$" in text:
-            order.currency = "USD"
-        if tot > 0:
-            order.total_amount = tot
-        if pre > 0:
-            order.prepayment_amount = pre
-        if bal > 0:
-            order.balance_due = bal
+    # Olasila (Остаток к получению)
+    olasila_before = re.search(r"(\d[\d\s.,]*)\s*(?:som|сум|so'm)?\s*(?:olasila|оласила)", text, re.IGNORECASE)
+    if olasila_before:
+        order.balance_due = normalize_amount(olasila_before.group(1))
+    else:
+        olasila_after = re.search(r"(?:olasila|оласила|qoldiq|колдик|qoldi|колди|ostatok|остаток)\s*[:;=-]?[ \t]+(\d[\d\s.,]*)", text, re.IGNORECASE)
+        if olasila_after:
+            order.balance_due = normalize_amount(olasila_after.group(1))
+
+    if order.balance_due == 0.0 and not has_full_prepayment and order.total_amount > 0:
+        order.balance_due = max(0.0, order.total_amount - order.prepayment_amount)
 
     # 4. Дата доставки (DD.MM.YYYY или YYYY-MM-DD)
     date_matches = re.findall(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", text)
@@ -126,7 +257,7 @@ def parse_order_regex(text: str) -> OrderData:
             year = f"20{year}"
         order.delivery_date = f"{year}-{int(month):02d}-{int(day):02d}"
 
-    # 5. Размеры и количество (179х73-1шт, 199х88-1шт, 200/180 2ta, 90/194 (3ta))
+    # 5. Размеры и количество
     size_pattern = re.compile(
         r"(\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b)(?:[-–—\s(]*([0-9]+)\s*(?:ta|dona|шт|d)\)?)?",
         re.IGNORECASE
@@ -149,56 +280,43 @@ def parse_order_regex(text: str) -> OrderData:
         order.size = ", ".join(size_strs)
 
     # 6. Адрес доставки
-    # Ищем строку перед датой, исключая характеристики, ткань и финансы
-    ignore_for_address = [
-        "summa", "сумма", "olindi", "олинди", "olasila", "оласила",
-        "narxi", "нархи", "narx", "нарх",
-        "purjina", "пружина", "paralon", "паралон", "поролон", "plotns", "плотност",
-        "kakos", "какос", "кокос", "qora", "кора", "tomoni", "томони", "qavat", "кават",
-        "xb", "хб", "barxt", "бархат", "seriy", "серый", "palasa", "полоса", "admanka",
-        "zet", "зет", "zich", "зич", "bort", "борт", "namatrasnik", "наматрасник", "chixol", "чехол"
-    ]
-    for i, line in enumerate(lines):
-        if order.delivery_date and (re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", line)):
-            if i > 0:
-                candidate = lines[i-1].strip()
-                cand_lower = candidate.lower()
-                if (
-                    not any(k in cand_lower for k in ignore_for_address)
-                    and "=" not in candidate
-                    and "$" not in candidate
-                    and not re.search(r"^\d+\s*[-+]\s*\d+", candidate)
-                ):
-                    addr_candidate = re.sub(r"(?i)(ga|ka|ge|ke|га|ка|ге|ке)$", "", candidate).strip()
-                    order.delivery_address = addr_candidate
-                    break
+    order.delivery_address = extract_address(text, delivery_date=order.delivery_date or "")
 
-    # 7. Фильтрация строк и извлечение Модели, Характеристик и Материала
+    # Заполняем имя клиента из пометок к телефону (например: Элла, Maniki)
+    for p_num, p_note in order.phone_notes.items():
+        if p_note and not order.customer_name:
+            order.customer_name = p_note
+            break
+
+    # 7. Фильтрация строк для извлечения названия модели и характеристик
     content_lines: List[str] = []
-    
     for line in lines:
         lower = line.lower()
-        
-        # Стоп на финансовом блоке или формуле расчета (например, 430-100=330$)
+
+        if line.startswith("#"):
+            continue
+
+        # Пропускаем строки с телефонами в первую очередь
+        if extract_uz_phones(line):
+            continue
+
+        # Стоп на финансовом блоке или формуле расчета
         if (
-            any(lower.startswith(k) for k in ["summa", "сумма", "narxi", "нархи", "narx", "нарх", "olindi", "олинди", "olasila", "оласила"])
+            any(lower.startswith(k) for k in ["summa", "suma", "сумма", "сума", "narxi", "нархи", "narx", "нарх", "olindi", "олинди", "olasila", "оласила"])
             or re.search(r"\d+\s*-\s*\d+\s*=", line)
+            or re.search(r"\d+\s*-\s*\d+.*(?:karta|карта|som|сум|\$)", lower)
             or line.strip().endswith("$")
         ):
             break
-        
-        # Пропускаем хештеги
-        if line.startswith("#"):
-            continue
-            
-        # Пропускаем строки с телефонными номерами
-        if re.search(r"\b[0-9]{9}\b", line):
-            continue
 
         # Пропускаем строки с датами
         if re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", line):
             continue
-            
+
+        # Пропускаем строку адреса если она уже определена
+        if order.delivery_address and (order.delivery_address in line or line in order.delivery_address):
+            continue
+
         content_lines.append(line)
 
     explicit_model = None
@@ -209,12 +327,10 @@ def parse_order_regex(text: str) -> OrderData:
     for line in content_lines:
         lower = line.lower()
         clean_decor = re.sub(r"[✨⭐💎👑🌟🔥🏷️]", "", line).strip()
-        
-        # Проверяем размер
+
         if any(k in lower for k in ["razmer", "размер"]) or re.search(r"\b\d{2,3}\s*[/x*х]\s*\d{2,3}\b", line):
             continue
-            
-        # Явное указание модели: ✨Модель М3✨ или ⚜Модель М3⚜ или Model M3
+
         model_check = re.search(r"^(?:модель|модел|model|modeli)\s*[:;=-]?\s*(.+)", clean_decor, re.IGNORECASE)
         if model_check:
             raw_model = model_check.group(1).strip()
@@ -222,30 +338,27 @@ def parse_order_regex(text: str) -> OrderData:
             explicit_model = f"Модель {clean_val}"
             continue
 
-        # Материал / Ткань / Цвет (Material, Rangi, Ранги, Чехол)
         if any(k in lower for k in ["material", "материал", "rangi", "ранги", "matosi", "матоси", "чехол", "chexol"]):
             clean_mat = re.sub(r"(?i)^(?:material|материал|rangi|ранги|matosi|матоси|чехол|chexol)\s*[:;=-]?\s*", "", clean_decor)
             material_lines.append(clean_mat.strip(";:, "))
             continue
 
-        # Характеристики и слои (пружины, слои, поролон, кокос и т.д.)
         spec_keywords = [
             "purjina", "пружина", "независим", "nezavisim",
             "paralon", "паралон", "поролон", "plotns", "плотност",
             "kakos", "какос", "кокос", "qora", "кора", "черн",
-            "tomoni", "томони", "qavat", "кават", "слой", "bambuk", "бамбук"
+            "tomoni", "томони", "qavat", "кават", "слой", "bambuk", "бамбук",
+            "bezpurjniy", "безпружинный", "toper", "топер"
         ]
         if any(k in lower for k in spec_keywords):
             spec_lines.append(clean_decor)
             continue
 
-        # Ткань/расцветка (oq xb, seriy, naqwli, palasa, barxt)
-        fabric_keywords = ["xb", "хб", "barxt", "бархат", "seriy", "серый", "naqwli", "накшли", "palasa", "полоса", "admanka", "stop"]
+        fabric_keywords = ["xb", "хб", "barxt", "бархат", "seriy", "серый", "naqwli", "накшли", "palasa", "полоса", "admanka", "stop", "sintetika", "синтетика"]
         if any(k in lower for k in fabric_keywords):
             material_lines.append(clean_decor)
             continue
 
-        # Если не подошло ни под один фильтр — кандидат на имя товара
         product_candidates.append(clean_decor)
 
     # Приоритет выбора названия товара:
@@ -254,12 +367,17 @@ def parse_order_regex(text: str) -> OrderData:
         if product_candidates:
             spec_lines = product_candidates + spec_lines
     elif product_candidates:
-        order.product_name = product_candidates[0]
-        if len(product_candidates) > 1:
-            spec_lines.extend(product_candidates[1:])
+        # Проверяем, не является ли кандидат слишком похожим на имя человека или мусор
+        cand = product_candidates[0]
+        if len(cand) > 1 and not cand.isdigit():
+            order.product_name = cand
+            if len(product_candidates) > 1:
+                spec_lines.extend(product_candidates[1:])
     elif spec_lines:
         order.product_name = spec_lines[0]
         spec_lines = spec_lines[1:]
+    else:
+        order.product_name = "Матрас"
 
     if material_lines:
         order.material = ", ".join(material_lines)
